@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+.venv/
+screenshots/
+auth_state/
+auths/
+accounts.json
+session
+bearer_token
+test.py
+.env
