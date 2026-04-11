@@ -286,10 +286,6 @@ autoteam/
 
 ---
 
-<div align="center">
+## Star History
 
-如果觉得有用，欢迎 Star ⭐
-
-[![GitHub stars](https://img.shields.io/github/stars/cnitlrt/AutoTeam?style=social)](https://github.com/cnitlrt/AutoTeam)
-
-</div>
+[![Star History Chart](https://api.star-history.com/svg?repos=cnitlrt/AutoTeam&type=Date)](https://star-history.com/#cnitlrt/AutoTeam&Date)
