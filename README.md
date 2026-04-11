@@ -24,6 +24,7 @@
 | 🔄 | **智能轮转** | 额度用完自动移出，优先复用旧号，万不得已才创建新号 |
 | ☁️ | **CPA 同步** | 认证文件自动上传/删除，只同步 active 账号 |
 | 👥 | **Team 管理** | 自动补满/清理成员，同步 Team 实际状态 |
+| 🌐 | **HTTP API** | FastAPI 接口，方便对接外部系统、定时任务、Web 面板 |
 
 ## 快速开始
 
@@ -66,12 +67,68 @@ uv run autoteam <command> [args]
 | `fill [N]` | 补满 Team 成员到 N 个（默认 5） |
 | `cleanup [N]` | 清理多余成员到 N 个（只移除本地管理的） |
 | `sync` | 手动同步认证文件到 CPA |
+| `api` | 启动 HTTP API 服务器（默认端口 8787） |
 
 **日常只需一条命令：**
 
 ```bash
 uv run autoteam rotate
 ```
+
+### HTTP API
+
+启动 API 服务器后，所有管理功能均可通过 HTTP 调用，方便对接定时任务平台、Web 面板等外部系统。
+
+```bash
+uv run autoteam api                # 默认 0.0.0.0:8787
+uv run autoteam api --port 9000   # 自定义端口
+```
+
+启动后访问 `http://localhost:8787/docs` 查看交互式 API 文档（Swagger UI）。
+
+#### 端点一览
+
+**同步端点（即时返回）**
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/status` | 账号状态 + active 实时额度 |
+| GET | `/api/accounts` | 所有账号列表 |
+| GET | `/api/accounts/active` | 活跃账号 |
+| GET | `/api/accounts/standby` | 待命账号 |
+| POST | `/api/sync` | 同步认证文件到 CPA |
+| GET | `/api/cpa/files` | CPA 认证文件列表 |
+
+**后台任务端点（返回 task_id，轮询获取结果）**
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/tasks/rotate` | 智能轮转 `{"target": 5}` |
+| POST | `/api/tasks/check` | 检查所有 active 额度 |
+| POST | `/api/tasks/add` | 添加新账号 |
+| POST | `/api/tasks/fill` | 补满成员 `{"target": 5}` |
+| POST | `/api/tasks/cleanup` | 清理多余成员 `{"max_seats": null}` |
+| GET | `/api/tasks` | 查看所有任务 |
+| GET | `/api/tasks/{task_id}` | 查看任务状态和结果 |
+
+#### 调用示例
+
+```bash
+# 查看账号状态
+curl http://localhost:8787/api/status
+
+# 触发轮转（后台执行）
+curl -X POST http://localhost:8787/api/tasks/rotate \
+  -H 'Content-Type: application/json' \
+  -d '{"target": 5}'
+# 返回: {"task_id": "a1b2c3d4e5f6", "status": "pending", ...}
+
+# 查看任务进度
+curl http://localhost:8787/api/tasks/a1b2c3d4e5f6
+# 返回: {"task_id": "...", "status": "completed", "result": ..., ...}
+```
+
+> 后台任务使用线程锁防止并发冲突，同一时间只允许一个 Playwright 操作。若有任务正在执行，新请求返回 `409 Conflict`。
 
 ## 工作原理
 
@@ -131,6 +188,7 @@ autoteam/
 ├── .env.example                # 配置模板
 └── src/autoteam/
     ├── manager.py              # CLI 入口，所有命令
+    ├── api.py                  # HTTP API（FastAPI）
     ├── config.py               # 配置加载（从 .env）
     ├── display.py              # 虚拟显示器自动设置
     ├── accounts.py             # 账号池持久化管理
@@ -165,6 +223,8 @@ autoteam/
 | [Python 3.10+](https://python.org) | 运行环境 |
 | [uv](https://docs.astral.sh/uv/) | 包管理 |
 | [Playwright](https://playwright.dev) | 浏览器自动化 (Chromium) |
+| [FastAPI](https://fastapi.tiangolo.com) | HTTP API 框架 |
+| [Rich](https://rich.readthedocs.io) | 终端美化输出 |
 | xvfb | Linux 无头服务器虚拟显示 |
 | [CloudMail](https://github.com/maillab/cloud-mail) | Cloudflare Workers 临时邮箱服务 |
 | [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) | Codex 代理，认证文件同步目标 |
