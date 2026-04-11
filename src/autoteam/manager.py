@@ -985,8 +985,6 @@ def cmd_rotate(target_seats=5):
 
         if vacancies <= 0:
             logger.info("[4/5] Team 已满 (%d/%d)", current_count, TARGET)
-            sync_to_cpa()
-            _print_status_table(load_accounts())
             return
 
         logger.info("[4/5] 填补 %d 个空缺 (当前 %d/%d)...", vacancies, current_count, TARGET)
@@ -1062,8 +1060,6 @@ def cmd_rotate(target_seats=5):
         remaining = vacancies - filled
         if remaining <= 0:
             logger.info("[4/5] 已用旧账号填满空缺")
-            sync_to_cpa()
-            _print_status_table(load_accounts())
             return
 
         # 必须创建新号
@@ -1077,10 +1073,10 @@ def cmd_rotate(target_seats=5):
     finally:
         if chatgpt and chatgpt.browser:
             chatgpt.stop()
-
-    logger.info("[轮转] 轮转完成")
-    sync_to_cpa()
-    _print_status_table(load_accounts())
+        # 所有操作完成后统一同步 CPA，避免中途同步导致 CPA 不可用
+        logger.info("[轮转] 轮转完成，同步 CPA...")
+        sync_to_cpa()
+        _print_status_table(load_accounts())
 
 
 def cmd_add():
