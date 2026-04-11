@@ -144,3 +144,9 @@ autoteam/
 - Playwright (Chromium)
 - xvfb (Linux 无头服务器)
 - CloudMail 实例（Cloudflare Workers 邮箱服务）
+
+## 友情链接
+
+感谢 **LinuxDo** 社区的支持！
+
+[![LinuxDo](https://img.shields.io/badge/社区-LinuxDo-blue?style=for-the-badge)](https://linux.do/)
