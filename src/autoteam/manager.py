@@ -1094,7 +1094,7 @@ def cmd_rotate(target_seats=5):
         # 所有操作完成后统一同步 CPA，避免中途同步导致 CPA 不可用
         logger.info("[轮转] 轮转完成，同步 CPA...")
         sync_to_cpa()
-        _print_status_table(load_accounts())
+        logger.info("[轮转] 完成，使用 status 命令查看最新状态")
 
 
 def cmd_add():
