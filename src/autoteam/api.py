@@ -732,6 +732,91 @@ def post_sync():
     return {"message": "同步完成"}
 
 
+@app.get("/api/team/members")
+def get_team_members():
+    """获取 Team 全部成员（包括手动添加的外部成员）"""
+    if not _playwright_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail=_current_busy_detail("有任务正在执行，请等待完成后再查询"))
+
+    try:
+        from autoteam.chatgpt_api import ChatGPTTeamAPI
+
+        chatgpt = ChatGPTTeamAPI()
+        chatgpt.start()
+        try:
+            from autoteam.account_ops import fetch_team_state
+            from autoteam.accounts import load_accounts
+
+            members, invites = fetch_team_state(chatgpt)
+            local_emails = {a["email"].lower() for a in load_accounts()}
+
+            result = []
+            for m in members:
+                email = (m.get("email") or "").lower()
+                result.append(
+                    {
+                        "email": m.get("email", ""),
+                        "role": m.get("role", ""),
+                        "user_id": m.get("user_id") or m.get("id", ""),
+                        "is_local": email in local_emails,
+                        "type": "member",
+                    }
+                )
+            for inv in invites:
+                email = (inv.get("email_address") or inv.get("email") or "").lower()
+                result.append(
+                    {
+                        "email": email,
+                        "role": inv.get("role", ""),
+                        "user_id": inv.get("id", ""),
+                        "is_local": email in local_emails,
+                        "type": "invite",
+                    }
+                )
+            return {"members": result, "total": len(members), "invites": len(invites)}
+        finally:
+            chatgpt.stop()
+    finally:
+        _playwright_lock.release()
+
+
+# ---------------------------------------------------------------------------
+# 日志收集
+# ---------------------------------------------------------------------------
+
+_log_buffer: list[dict] = []
+_LOG_BUFFER_MAX = 500
+
+
+class _LogCollector(logging.Handler):
+    """收集日志到内存 buffer，供前端查询"""
+
+    def emit(self, record):
+        entry = {
+            "time": record.created,
+            "level": record.levelname,
+            "message": self.format(record),
+        }
+        _log_buffer.append(entry)
+        if len(_log_buffer) > _LOG_BUFFER_MAX:
+            del _log_buffer[: len(_log_buffer) - _LOG_BUFFER_MAX]
+
+
+_log_collector = _LogCollector()
+_log_collector.setFormatter(logging.Formatter("%(message)s"))
+logging.getLogger().addHandler(_log_collector)
+
+
+@app.get("/api/logs")
+def get_logs(limit: int = 100, since: float = 0):
+    """获取最近的日志"""
+    if since > 0:
+        entries = [e for e in _log_buffer if e["time"] > since]
+    else:
+        entries = _log_buffer[-limit:]
+    return {"logs": entries, "total": len(_log_buffer)}
+
+
 @app.post("/api/sync/main-codex")
 def post_sync_main_codex():
     """兼容旧接口：开始主号 Codex 登录并同步到 CPA。"""

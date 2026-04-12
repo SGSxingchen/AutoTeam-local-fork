@@ -70,4 +70,7 @@ export const api = {
 
   getAutoCheckConfig: () => request('GET', '/config/auto-check'),
   setAutoCheckConfig: (cfg) => request('PUT', '/config/auto-check', cfg),
+
+  getTeamMembers: () => request('GET', '/team/members'),
+  getLogs: (limit = 100, since = 0) => request('GET', `/logs?limit=${limit}&since=${since}`),
 }

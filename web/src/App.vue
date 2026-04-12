@@ -22,14 +22,14 @@
   </div>
 
   <!-- 主面板 -->
-  <div v-else class="max-w-7xl mx-auto px-4 py-6">
-    <!-- Header -->
-    <header class="flex items-center justify-between mb-8">
-      <div>
-        <h1 class="text-2xl font-bold text-white">AutoTeam</h1>
-        <p class="text-sm text-gray-400 mt-1">ChatGPT Team 账号自动轮转管理</p>
-      </div>
-      <div class="flex items-center gap-3">
+  <div v-else class="flex min-h-screen">
+    <!-- 侧边栏 -->
+    <Sidebar :active="currentPage" @navigate="currentPage = $event" />
+
+    <!-- 主内容区 -->
+    <div class="flex-1 p-6 overflow-y-auto">
+      <!-- 顶部状态栏 -->
+      <div class="flex items-center justify-end gap-3 mb-6">
         <span v-if="busyTask" class="flex items-center gap-2 text-sm text-yellow-400">
           <span class="animate-spin inline-block w-4 h-4 border-2 border-yellow-400 border-t-transparent rounded-full"></span>
           {{ busyTask.command === 'admin-login'
@@ -47,26 +47,33 @@
           登出
         </button>
       </div>
-    </header>
 
-    <!-- Dashboard -->
-    <Dashboard :status="status" :loading="loading" :running-task="busyTask" :admin-status="adminStatus" @refresh="refresh" />
+      <!-- 页面内容 -->
+      <Dashboard v-if="currentPage === 'dashboard'"
+        :status="status" :loading="loading" :running-task="busyTask" :admin-status="adminStatus" @refresh="refresh" />
 
-    <!-- Task Panel -->
-    <TaskPanel :running-task="busyTask" :admin-status="adminStatus" @task-started="onTaskStarted" @refresh="refresh" />
+      <TeamMembers v-else-if="currentPage === 'team'" />
 
-    <!-- Task History -->
-    <TaskHistory :tasks="tasks" />
+      <TasksPage v-else-if="currentPage === 'tasks'"
+        :running-task="busyTask" :admin-status="adminStatus" :tasks="tasks"
+        @task-started="onTaskStarted" @refresh="refresh" />
 
-    <!-- Settings -->
-    <Settings :admin-status="adminStatus" :codex-status="codexStatus" @refresh="refresh" @admin-progress="onAdminProgress" />
+      <LogViewer v-else-if="currentPage === 'logs'" />
+
+      <Settings v-else-if="currentPage === 'settings'"
+        :admin-status="adminStatus" :codex-status="codexStatus" @refresh="refresh" @admin-progress="onAdminProgress" />
+    </div>
   </div>
 </template>
 
 <script setup>
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { api, setApiKey, clearApiKey } from './api.js'
+import Sidebar from './components/Sidebar.vue'
 import Dashboard from './components/Dashboard.vue'
+import TeamMembers from './components/TeamMembers.vue'
+import TasksPage from './components/TasksPage.vue'
+import LogViewer from './components/LogViewer.vue'
 import TaskPanel from './components/TaskPanel.vue'
 import TaskHistory from './components/TaskHistory.vue'
 import Settings from './components/Settings.vue'
@@ -76,6 +83,7 @@ const authRequired = ref(false)
 const authLoading = ref(false)
 const authError = ref('')
 const inputKey = ref('')
+const currentPage = ref('dashboard')
 
 const status = ref(null)
 const adminStatus = ref(null)
@@ -107,7 +115,6 @@ async function checkAuth() {
       authRequired.value = true
       return false
     }
-    // 网络错误等，假设不需要认证
     authenticated.value = true
     authRequired.value = false
     return true
