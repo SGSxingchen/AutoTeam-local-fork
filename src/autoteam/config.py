@@ -32,6 +32,9 @@ CPA_KEY = os.environ.get("CPA_KEY", "")
 EMAIL_POLL_INTERVAL = int(os.environ.get("EMAIL_POLL_INTERVAL", "3"))
 EMAIL_POLL_TIMEOUT = int(os.environ.get("EMAIL_POLL_TIMEOUT", "300"))
 
+# API 鉴权（不设置则不启用）
+API_KEY = os.environ.get("API_KEY", "")
+
 # 自动巡检配置
 AUTO_CHECK_INTERVAL = int(os.environ.get("AUTO_CHECK_INTERVAL", "300"))  # 巡检间隔（秒），默认 5 分钟
 AUTO_CHECK_THRESHOLD = int(os.environ.get("AUTO_CHECK_THRESHOLD", "10"))  # 额度低于此百分比触发轮转，默认 10%

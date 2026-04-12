@@ -7,10 +7,12 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+from autoteam.config import API_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +21,44 @@ app = FastAPI(
     description="ChatGPT Team 账号自动轮转管理 API",
     version="0.1.0",
 )
+
+# ---------------------------------------------------------------------------
+# API Key 鉴权中间件
+# ---------------------------------------------------------------------------
+
+_AUTH_SKIP_PATHS = {"/api/auth/check"}
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    # 不鉴权的路径：非 /api 路径、auth/check 端点
+    if not path.startswith("/api/") or path in _AUTH_SKIP_PATHS:
+        return await call_next(request)
+    # 未配置 API_KEY 则跳过鉴权
+    if not API_KEY:
+        return await call_next(request)
+    # 从 header 或 query param 获取 key
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+    else:
+        token = request.query_params.get("key", "")
+    if token != API_KEY:
+        return JSONResponse(status_code=401, content={"detail": "未授权，请提供有效的 API Key"})
+    return await call_next(request)
+
+
+@app.get("/api/auth/check")
+def check_auth(request: Request):
+    """验证 API Key 是否有效。未配置 API_KEY 时始终返回成功。"""
+    if not API_KEY:
+        return {"authenticated": True, "auth_required": False}
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer ") and auth_header[7:] == API_KEY:
+        return {"authenticated": True, "auth_required": True}
+    return JSONResponse(status_code=401, content={"authenticated": False, "auth_required": True})
+
 
 # ---------------------------------------------------------------------------
 # 后台任务管理

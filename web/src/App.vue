@@ -1,5 +1,28 @@
 <template>
-  <div class="max-w-7xl mx-auto px-4 py-6">
+  <!-- 登录页 -->
+  <div v-if="!authenticated" class="min-h-screen flex items-center justify-center">
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-8 w-full max-w-sm">
+      <h1 class="text-xl font-bold text-white text-center mb-2">AutoTeam</h1>
+      <p class="text-sm text-gray-400 text-center mb-6">请输入 API Key 登录</p>
+      <div v-if="authError" class="mb-4 px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">
+        {{ authError }}
+      </div>
+      <input
+        v-model.trim="inputKey"
+        type="password"
+        placeholder="API Key"
+        @keyup.enter="doLogin"
+        class="w-full px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500 mb-4"
+      />
+      <button @click="doLogin" :disabled="!inputKey || authLoading"
+        class="w-full px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition disabled:opacity-50">
+        {{ authLoading ? '验证中...' : '登录' }}
+      </button>
+    </div>
+  </div>
+
+  <!-- 主面板 -->
+  <div v-else class="max-w-7xl mx-auto px-4 py-6">
     <!-- Header -->
     <header class="flex items-center justify-between mb-8">
       <div>
@@ -18,6 +41,10 @@
         <button @click="refresh" :disabled="loading"
           class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-sm rounded-lg border border-gray-700 transition disabled:opacity-50">
           {{ loading ? '刷新中...' : '刷新' }}
+        </button>
+        <button v-if="authRequired" @click="doLogout"
+          class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-sm rounded-lg border border-gray-700 transition text-gray-400 hover:text-white">
+          登出
         </button>
       </div>
     </header>
@@ -38,11 +65,17 @@
 
 <script setup>
 import { computed, ref, onMounted, onUnmounted } from 'vue'
-import { api } from './api.js'
+import { api, setApiKey, clearApiKey } from './api.js'
 import Dashboard from './components/Dashboard.vue'
 import TaskPanel from './components/TaskPanel.vue'
 import TaskHistory from './components/TaskHistory.vue'
 import Settings from './components/Settings.vue'
+
+const authenticated = ref(false)
+const authRequired = ref(false)
+const authLoading = ref(false)
+const authError = ref('')
+const inputKey = ref('')
 
 const status = ref(null)
 const adminStatus = ref(null)
@@ -62,6 +95,53 @@ const busyTask = computed(() => {
 
 let pollTimer = null
 
+async function checkAuth() {
+  try {
+    const result = await api.checkAuth()
+    authenticated.value = result.authenticated
+    authRequired.value = result.auth_required
+    return result.authenticated
+  } catch (e) {
+    if (e.status === 401) {
+      authenticated.value = false
+      authRequired.value = true
+      return false
+    }
+    // 网络错误等，假设不需要认证
+    authenticated.value = true
+    authRequired.value = false
+    return true
+  }
+}
+
+async function doLogin() {
+  authError.value = ''
+  authLoading.value = true
+  try {
+    setApiKey(inputKey.value)
+    const ok = await checkAuth()
+    if (!ok) {
+      clearApiKey()
+      authError.value = 'API Key 无效'
+    } else {
+      inputKey.value = ''
+      refresh()
+      startPolling(600000)
+    }
+  } catch (e) {
+    clearApiKey()
+    authError.value = e.message
+  } finally {
+    authLoading.value = false
+  }
+}
+
+function doLogout() {
+  clearApiKey()
+  authenticated.value = false
+  stopPolling()
+}
+
 async function refresh() {
   loading.value = true
   try {
@@ -77,6 +157,10 @@ async function refresh() {
     codexStatus.value = codex
     runningTask.value = t.find(t => t.status === 'running' || t.status === 'pending') || null
   } catch (e) {
+    if (e.status === 401) {
+      authenticated.value = false
+      return
+    }
     console.error('刷新失败:', e)
   } finally {
     loading.value = false
@@ -84,7 +168,6 @@ async function refresh() {
 }
 
 function onTaskStarted() {
-  // 任务启动后开始较快轮询
   startPolling(10000)
   refresh()
 }
@@ -98,7 +181,6 @@ function startPolling(interval = 600000) {
   stopPolling()
   pollTimer = setInterval(async () => {
     await refresh()
-    // 如果没有运行中的任务，降回慢轮询
     if (!busyTask.value && interval < 600000) {
       startPolling(600000)
     }
@@ -112,9 +194,12 @@ function stopPolling() {
   }
 }
 
-onMounted(() => {
-  refresh()
-  startPolling(600000)
+onMounted(async () => {
+  const ok = await checkAuth()
+  if (ok) {
+    refresh()
+    startPolling(600000)
+  }
 })
 
 onUnmounted(() => {

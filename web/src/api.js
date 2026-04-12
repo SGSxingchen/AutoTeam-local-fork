@@ -1,21 +1,39 @@
 const BASE = '/api'
 
+function getApiKey() {
+  return localStorage.getItem('autoteam_api_key') || ''
+}
+
+export function setApiKey(key) {
+  localStorage.setItem('autoteam_api_key', key)
+}
+
+export function clearApiKey() {
+  localStorage.removeItem('autoteam_api_key')
+}
+
 async function request(method, path, body = null) {
-  const opts = {
-    method,
-    headers: { 'Content-Type': 'application/json' },
+  const headers = { 'Content-Type': 'application/json' }
+  const key = getApiKey()
+  if (key) {
+    headers['Authorization'] = `Bearer ${key}`
   }
+  const opts = { method, headers }
   if (body) opts.body = JSON.stringify(body)
   const resp = await fetch(`${BASE}${path}`, opts)
   const data = await resp.json()
   if (!resp.ok) {
     const msg = data?.detail?.message || data?.detail || `HTTP ${resp.status}`
-    throw new Error(msg)
+    const err = new Error(msg)
+    err.status = resp.status
+    throw err
   }
   return data
 }
 
 export const api = {
+  checkAuth: () => request('GET', '/auth/check'),
+
   getStatus: () => request('GET', '/status'),
   getAdminStatus: () => request('GET', '/admin/status'),
   getMainCodexStatus: () => request('GET', '/main-codex/status'),
