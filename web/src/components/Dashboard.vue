@@ -65,6 +65,16 @@
                   {{ actionEmail === acc.email && actionType === 'login' ? '登录中...' : '登录' }}
                 </button>
                 <button
+                  v-if="acc.status === 'active'"
+                  @click="kickAccount(acc.email)"
+                  :disabled="actionDisabled || actionEmail === acc.email"
+                  class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
+                  :class="actionDisabled || actionEmail === acc.email
+                    ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
+                    : 'bg-amber-600/10 text-amber-400 border-amber-500/30 hover:bg-amber-600/20'">
+                  {{ actionEmail === acc.email && actionType === 'kick' ? '移出中...' : '移出' }}
+                </button>
+                <button
                   @click="removeAccount(acc.email)"
                   :disabled="actionDisabled || actionEmail === acc.email"
                   class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
@@ -183,6 +193,30 @@ async function loginAccount(email) {
     const result = await api.loginAccount(email)
     message.value = `已提交 ${email} 的登录任务: ${result.task_id}`
     messageClass.value = 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+    emit('refresh')
+  } catch (e) {
+    message.value = e.message
+    messageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  } finally {
+    actionEmail.value = ''
+    actionType.value = ''
+    setTimeout(() => { message.value = '' }, 8000)
+  }
+}
+
+async function kickAccount(email) {
+  if (actionDisabled.value) return
+
+  const ok = window.confirm(`确认将 ${email} 移出 Team？\n账号会变为 standby 状态，额度恢复后可重新复用。`)
+  if (!ok) return
+
+  actionEmail.value = email
+  actionType.value = 'kick'
+  message.value = ''
+  try {
+    const result = await api.kickAccount(email)
+    message.value = result.message || `已将 ${email} 移出 Team`
+    messageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
     emit('refresh')
   } catch (e) {
     message.value = e.message

@@ -607,6 +607,40 @@ def delete_account(email: str):
         _playwright_lock.release()
 
 
+@app.post("/api/accounts/{email}/kick")
+def post_kick_account(email: str):
+    """将账号从 Team 中移出，状态变为 standby"""
+    if not _playwright_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail=_current_busy_detail("有任务正在执行，请等待完成后再操作"))
+
+    try:
+        from autoteam.accounts import find_account, load_accounts, update_account
+        from autoteam.manager import remove_from_team
+
+        email = email.strip().lower()
+        accounts = load_accounts()
+        acc = find_account(accounts, email)
+        if not acc:
+            raise HTTPException(status_code=404, detail="账号不存在")
+        if acc["status"] != "active":
+            raise HTTPException(status_code=400, detail=f"账号状态为 {acc['status']}，不是 active")
+
+        from autoteam.chatgpt_api import ChatGPTTeamAPI
+
+        chatgpt = ChatGPTTeamAPI()
+        chatgpt.start()
+        try:
+            ok = remove_from_team(chatgpt, email)
+            if ok:
+                update_account(email, status="standby")
+                return {"message": f"已将 {email} 移出 Team", "email": email, "status": "standby"}
+            raise HTTPException(status_code=500, detail=f"移出 {email} 失败")
+        finally:
+            chatgpt.stop()
+    finally:
+        _playwright_lock.release()
+
+
 class LoginAccountParams(BaseModel):
     email: str
 
