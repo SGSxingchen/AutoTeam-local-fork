@@ -582,7 +582,16 @@ def login_codex_via_browser(email, password, mail_client=None):
 
                     _screenshot(page, f"codex_04_workspace_{step + 1}_after.png")
                     if selected:
-                        continue  # 选完后重新进入循环，等下一步页面
+                        # 选完 workspace 后点"继续"按钮提交
+                        try:
+                            cont_btn = page.locator('button:has-text("继续"), button:has-text("Continue")').first
+                            if cont_btn.is_visible(timeout=3000):
+                                cont_btn.click()
+                                time.sleep(3)
+                                logger.info("[Codex] 已点击继续 (step %d)", step + 1)
+                        except Exception:
+                            pass
+                        continue
                     else:
                         logger.warning("[Codex] 无法选择 workspace '%s' (step %d)", workspace_name, step + 1)
 
