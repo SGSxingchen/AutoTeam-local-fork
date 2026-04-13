@@ -747,30 +747,37 @@ def _register_direct_once(mail_client, email, password):
 
         screenshot(page, "direct_01_login_page.png")
 
-        # 可能是首页（Get started）或登录页，需要先进入注册流程
+        # OpenAI 首页有多种 A/B 测试变体，需要逐步找到邮箱输入框
+        _email_selectors = (
+            'input[name="email"], input[type="email"], input[id="email"], '
+            'input[autocomplete="email"], input[autocomplete="username"], '
+            'input[placeholder*="email" i], input[placeholder*="Email" i]'
+        )
         try:
-            # 首先检查是否已经有邮箱输入框（新版统一页面）
-            email_visible = page.locator(
-                'input[name="email"], input[type="email"], input[placeholder*="email" i], '
-                'input[placeholder*="Email" i], input[autocomplete="email"]'
-            ).first.is_visible(timeout=3000)
+            email_visible = page.locator(_email_selectors).first.is_visible(timeout=3000)
             if not email_visible:
-                # 尝试点击各种注册/Sign up 按钮
-                for sel in [
-                    'a:has-text("Sign up for free")',
-                    'button:has-text("Sign up for free")',
-                    'a:has-text("Sign up")',
-                    'button:has-text("Sign up")',
-                    'a:has-text("注册")',
-                    'button:has-text("注册")',
+                # 尝试按优先级点击各种按钮来展开/跳转到邮箱输入
+                for sel, desc in [
+                    ('button:has-text("More options")', "More options"),
+                    ('button:has-text("更多选项")', "更多选项"),
+                    ('a:has-text("Sign up for free")', "Sign up for free"),
+                    ('button:has-text("Sign up for free")', "Sign up for free"),
+                    ('a:has-text("Sign up")', "Sign up"),
+                    ('button:has-text("Sign up")', "Sign up"),
+                    ('a:has-text("注册")', "注册"),
+                    ('button:has-text("注册")', "注册"),
+                    ('a:has-text("Log in")', "Log in"),
+                    ('button:has-text("Log in")', "Log in"),
                 ]:
                     try:
                         btn = page.locator(sel).first
                         if btn.is_visible(timeout=1000):
-                            logger.info("[直接注册] 点击注册按钮: %s", sel)
+                            logger.info("[直接注册] 点击: %s", desc)
                             btn.click()
-                            time.sleep(5)
-                            break
+                            time.sleep(3)
+                            # 检查邮箱输入框是否出现了
+                            if page.locator(_email_selectors).first.is_visible(timeout=3000):
+                                break
                     except Exception:
                         continue
         except Exception:
