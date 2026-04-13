@@ -261,33 +261,76 @@ class ChatGPTTeamAPI:
             "创建组织",
         )
 
-        for selector in ("button", '[role="button"]', "a", '[role="option"]'):
-            try:
-                for loc in self.page.locator(selector).all():
-                    try:
-                        if not loc.is_visible(timeout=200):
+        # 先用 JS 从 DOM 提取可见的 workspace 选项（只取叶子级别文本）
+        try:
+            js_candidates = self.page.evaluate("""() => {
+                const results = [];
+                const seen = new Set();
+                // 遍历所有元素，找"直接文本内容"短且有意义的
+                for (const el of document.querySelectorAll('*')) {
+                    // 直接文本 = 不含子元素的纯文本
+                    const directText = Array.from(el.childNodes)
+                        .filter(n => n.nodeType === 3)
+                        .map(n => n.textContent.trim())
+                        .filter(t => t.length > 0)
+                        .join(' ');
+                    if (!directText || directText.length > 50 || directText.length < 2) continue;
+                    if (seen.has(directText)) continue;
+                    // 必须可见
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width === 0 || rect.height === 0) continue;
+                    // 排除标题类
+                    const tag = el.tagName.toLowerCase();
+                    if (['h1', 'h2', 'h3', 'title', 'head', 'script', 'style'].includes(tag)) continue;
+                    seen.add(directText);
+                    results.push(directText);
+                }
+                return results;
+            }""")
+            # 过滤掉标题和无关文本
+            title_keywords = (
+                "选择一个工作空间",
+                "select a workspace",
+                "选择工作空间",
+                "工作空间",
+                "workspace",
+                "chatgpt",
+            )
+            for text in js_candidates or []:
+                if text in seen_texts:
+                    continue
+                text_l = text.lower()
+                # 跳过标题类文本
+                if text_l in (k.lower() for k in title_keywords):
+                    continue
+                # 跳过太短的（用户名缩写、头像字母等）
+                if len(text) <= 3:
+                    continue
+                seen_texts.add(text)
+                kind = "fallback" if any(key in text_l for key in exclude_keywords) else "preferred"
+                candidates.append({"id": str(len(candidates)), "label": text, "kind": kind})
+        except Exception as e:
+            logger.warning("[ChatGPT] JS 提取 workspace 候选失败: %s", e)
+
+        # fallback: Playwright 选择器
+        if not candidates:
+            for selector in ("button", '[role="button"]', "a", '[role="option"]', "div[class] > span", "li"):
+                try:
+                    for loc in self.page.locator(selector).all():
+                        try:
+                            if not loc.is_visible(timeout=200):
+                                continue
+                            text = loc.inner_text(timeout=500).strip()
+                        except Exception:
                             continue
-                        text = loc.inner_text(timeout=500).strip()
-                    except Exception:
-                        continue
-
-                    if not text or text in seen_texts:
-                        continue
-                    seen_texts.add(text)
-
-                    text_l = text.lower()
-                    if len(text) > 80:
-                        continue
-                    kind = "fallback" if any(key in text_l for key in exclude_keywords) else "preferred"
-                    candidates.append(
-                        {
-                            "id": str(len(candidates)),
-                            "label": text,
-                            "kind": kind,
-                        }
-                    )
-            except Exception:
-                pass
+                        if not text or text in seen_texts or len(text) > 80:
+                            continue
+                        seen_texts.add(text)
+                        text_l = text.lower()
+                        kind = "fallback" if any(key in text_l for key in exclude_keywords) else "preferred"
+                        candidates.append({"id": str(len(candidates)), "label": text, "kind": kind})
+                except Exception:
+                    pass
 
         logger.info("[ChatGPT] workspace 候选数: %d | candidates=%s", len(candidates), [c["label"] for c in candidates])
         self.workspace_options_cache = candidates
@@ -305,37 +348,80 @@ class ChatGPTTeamAPI:
                 continue
 
             label = option["label"]
-            # 重新按同样顺序扫描并点击对应索引
-            current_options = []
-            seen_texts = set()
-            for selector in ("button", '[role="button"]', "a", '[role="option"]'):
+            logger.info("[ChatGPT] 用户选择 workspace: %s", label)
+
+            # 用 JS 找到包含该文本的可点击卡片并点击
+            clicked = False
+            try:
+                clicked = self.page.evaluate(
+                    """(label) => {
+                    // 找到文本完全匹配的最小元素
+                    let matchEl = null;
+                    for (const el of document.querySelectorAll('*')) {
+                        // 直接文本内容（不含子元素的文本）匹配
+                        const directText = Array.from(el.childNodes)
+                            .filter(n => n.nodeType === 3)
+                            .map(n => n.textContent.trim())
+                            .join('');
+                        if (directText === label) {
+                            matchEl = el;
+                            break;
+                        }
+                    }
+                    if (!matchEl) {
+                        // fallback: textContent 完全匹配
+                        for (const el of document.querySelectorAll('*')) {
+                            if (el.textContent.trim() === label && el.children.length === 0) {
+                                matchEl = el;
+                                break;
+                            }
+                        }
+                    }
+                    if (!matchEl) return false;
+
+                    // 从匹配元素往上找最近的可点击容器（a/button/有 click handler 的 div）
+                    let target = matchEl;
+                    let bestTarget = matchEl;
+                    while (target && target.tagName !== 'BODY') {
+                        const tag = target.tagName.toLowerCase();
+                        if (tag === 'a' || tag === 'button') {
+                            bestTarget = target;
+                            break;
+                        }
+                        // 有 cursor:pointer 样式的元素
+                        const style = window.getComputedStyle(target);
+                        if (style.cursor === 'pointer') {
+                            bestTarget = target;
+                        }
+                        target = target.parentElement;
+                    }
+                    bestTarget.click();
+                    return true;
+                }""",
+                    label,
+                )
+            except Exception as e:
+                logger.warning("[ChatGPT] JS 点击 workspace 失败: %s", e)
+
+            if not clicked:
+                # fallback: Playwright text 选择器 + force click
                 try:
-                    for loc in self.page.locator(selector).all():
-                        try:
-                            if not loc.is_visible(timeout=200):
-                                continue
-                            text = loc.inner_text(timeout=500).strip()
-                        except Exception:
-                            continue
-                        if not text or text in seen_texts or len(text) > 80:
-                            continue
-                        seen_texts.add(text)
-                        current_options.append((str(len(current_options)), text, loc))
+                    loc = self.page.locator(f"text={label}").first
+                    if loc.is_visible(timeout=2000):
+                        loc.click(force=True)
+                        clicked = True
                 except Exception:
                     pass
 
-            for cur_id, cur_label, loc in current_options:
-                if cur_id == str(option_id):
-                    logger.info("[ChatGPT] 用户选择 workspace: %s", cur_label)
-                    loc.click()
-                    time.sleep(3)
-                    self.workspace_options_cache = []
-                    self._log_login_state("选择 workspace 后")
-                    step, detail = self._detect_login_step()
-                    logger.info("[ChatGPT] 选择 workspace 后结果: %s | detail=%s", step, detail)
-                    return {"step": step, "detail": detail}
+            if not clicked:
+                raise RuntimeError(f"未找到可点击的 workspace 选项: {label}")
 
-            raise RuntimeError(f"未找到可点击的 workspace 选项: {label}")
+            time.sleep(3)
+            self.workspace_options_cache = []
+            self._log_login_state("选择 workspace 后")
+            step, detail = self._detect_login_step()
+            logger.info("[ChatGPT] 选择 workspace 后结果: %s | detail=%s", step, detail)
+            return {"step": step, "detail": detail}
 
         raise RuntimeError(f"无效的 workspace 选项: {option_id}")
 
@@ -437,8 +523,53 @@ class ChatGPTTeamAPI:
 
     def submit_admin_code(self, code):
         code_input = self._visible_locator_in_frames(self.CODE_INPUT_SELECTORS, timeout_ms=5000)
-        if not code_input and "email-verification" not in self.page.url:
-            raise RuntimeError("当前不是验证码输入步骤")
+        if not code_input:
+            time.sleep(3)
+            code_input = self._visible_locator_in_frames(self.CODE_INPUT_SELECTORS, timeout_ms=5000)
+        # email-verification 页面可能用单字符输入框或其他结构
+        if not code_input:
+            try:
+                # 尝试单字符输入框（多个 input[maxlength="1"]）
+                single_inputs = self.page.locator('input[maxlength="1"]').all()
+                if len(single_inputs) >= 4:
+                    logger.info("[ChatGPT] 检测到 %d 个单字符验证码输入框", len(single_inputs))
+                    for i, char in enumerate(code):
+                        if i < len(single_inputs):
+                            single_inputs[i].fill(char)
+                            time.sleep(0.1)
+                    time.sleep(0.5)
+                    # 可能自动提交，也可能需要点按钮
+                    try:
+                        btn = self.page.locator(
+                            'button:has-text("Continue"), button:has-text("继续"), button:has-text("Verify"), button[type="submit"]'
+                        ).first
+                        if btn.is_visible(timeout=2000):
+                            btn.click()
+                    except Exception:
+                        pass
+                    time.sleep(8)
+                    self._log_login_state("管理员验证码提交后（单字符）")
+                    step, detail = self._detect_login_step()
+                    if step == "workspace_required":
+                        self._list_workspace_options()
+                    return {"step": step, "detail": detail}
+            except Exception as e:
+                logger.warning("[ChatGPT] 单字符输入框尝试失败: %s", e)
+        # 尝试用 JS 直接找任何可见的 input
+        if not code_input:
+            try:
+                code_input = self.page.locator("input:visible").first
+                if not code_input.is_visible(timeout=2000):
+                    code_input = None
+            except Exception:
+                code_input = None
+        if not code_input:
+            try:
+                self.page.screenshot(path=str(SCREENSHOT_DIR / "admin_login_code_not_found.png"), full_page=True)
+            except Exception:
+                pass
+            logger.error("[ChatGPT] 找不到验证码输入框 | URL=%s", self.page.url)
+            raise RuntimeError("找不到验证码输入框，页面可能已跳转或验证码已过期")
 
         logger.info("[ChatGPT] 提交管理员验证码前 | URL=%s | code_len=%d", self.page.url, len(code))
         try:

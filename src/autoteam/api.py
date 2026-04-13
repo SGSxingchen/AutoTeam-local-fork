@@ -75,6 +75,59 @@ _main_codex_step: str | None = None
 MAX_TASK_HISTORY = 50
 
 
+# ---------------------------------------------------------------------------
+# Playwright 专用线程执行器（解决跨线程调用问题）
+# ---------------------------------------------------------------------------
+
+import queue as _queue
+
+
+class _PlaywrightExecutor:
+    """将 Playwright 操作派发到专用线程执行，避免跨线程错误"""
+
+    def __init__(self):
+        self._queue: _queue.Queue = _queue.Queue()
+        self._thread: threading.Thread | None = None
+
+    def _worker(self):
+        while True:
+            item = self._queue.get()
+            if item is None:
+                break
+            func, args, kwargs, result_event, result_holder = item
+            try:
+                result_holder["result"] = func(*args, **kwargs)
+            except Exception as e:
+                result_holder["error"] = e
+            finally:
+                result_event.set()
+
+    def ensure_started(self):
+        if self._thread is None or not self._thread.is_alive():
+            self._thread = threading.Thread(target=self._worker, daemon=True)
+            self._thread.start()
+
+    def run(self, func, *args, **kwargs):
+        """在专用线程中执行函数，阻塞等待结果"""
+        self.ensure_started()
+        result_event = threading.Event()
+        result_holder: dict = {}
+        self._queue.put((func, args, kwargs, result_event, result_holder))
+        result_event.wait(timeout=300)  # 最长等 5 分钟
+        if "error" in result_holder:
+            raise result_holder["error"]
+        return result_holder.get("result")
+
+    def stop(self):
+        if self._thread and self._thread.is_alive():
+            self._queue.put(None)
+            self._thread.join(timeout=5)
+            self._thread = None
+
+
+_pw_executor = _PlaywrightExecutor()
+
+
 def _current_busy_detail(default_message: str):
     if _admin_login_api:
         return {
@@ -226,10 +279,13 @@ def _finish_admin_login(completed: dict):
     global _admin_login_api, _admin_login_step
     api = _admin_login_api
     try:
-        info = api.complete_admin_login()
+        info = _pw_executor.run(api.complete_admin_login)
     finally:
         if api:
-            api.stop()
+            try:
+                _pw_executor.run(api.stop)
+            except Exception:
+                pass
         _admin_login_api = None
         _admin_login_step = None
         if _playwright_lock.locked():
@@ -248,10 +304,13 @@ def _finish_main_codex_sync():
     global _main_codex_flow, _main_codex_step
     flow = _main_codex_flow
     try:
-        info = flow.complete()
+        info = _pw_executor.run(flow.complete)
     finally:
         if flow:
-            flow.stop()
+            try:
+                _pw_executor.run(flow.stop)
+            except Exception:
+                pass
         _main_codex_flow = None
         _main_codex_step = None
         if _playwright_lock.locked():
@@ -294,7 +353,10 @@ def post_admin_login_start(params: AdminEmailParams):
     global _admin_login_api, _admin_login_step
 
     if _admin_login_api:
-        _admin_login_api.stop()
+        try:
+            _pw_executor.run(_admin_login_api.stop)
+        except Exception:
+            pass
         _admin_login_api = None
         _admin_login_step = None
         if _playwright_lock.locked():
@@ -309,8 +371,13 @@ def post_admin_login_start(params: AdminEmailParams):
         from autoteam.chatgpt_api import ChatGPTTeamAPI
 
         logger.info("[API] 开始管理员登录: %s", params.email.strip())
-        api = ChatGPTTeamAPI()
-        result = api.begin_admin_login(params.email.strip())
+
+        def _do_start(email):
+            api = ChatGPTTeamAPI()
+            result = api.begin_admin_login(email)
+            return api, result
+
+        api, result = _pw_executor.run(_do_start, params.email.strip())
         step = result["step"]
         logger.info("[API] 管理员登录 start 返回: step=%s detail=%s", step, result.get("detail"))
         if step == "completed":
@@ -318,9 +385,11 @@ def post_admin_login_start(params: AdminEmailParams):
             return _finish_admin_login(result)
         if step in ("password_required", "code_required", "workspace_required"):
             return _set_pending_admin_login(api, step)
-        api.stop()
+        _pw_executor.run(api.stop)
         _playwright_lock.release()
         raise HTTPException(status_code=400, detail=result.get("detail") or "无法识别管理员登录步骤")
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("[API] 管理员登录 start 失败")
         if _playwright_lock.locked():
@@ -337,7 +406,7 @@ def post_admin_login_password(params: AdminPasswordParams):
 
     try:
         logger.info("[API] 提交管理员密码 | current_step=%s", _admin_login_step)
-        result = _admin_login_api.submit_admin_password(params.password)
+        result = _pw_executor.run(_admin_login_api.submit_admin_password, params.password)
         step = result["step"]
         logger.info("[API] 管理员密码提交返回: step=%s detail=%s", step, result.get("detail"))
         if step == "completed":
@@ -350,7 +419,10 @@ def post_admin_login_password(params: AdminPasswordParams):
         raise
     except Exception as exc:
         logger.exception("[API] 管理员密码提交失败")
-        _admin_login_api.stop()
+        try:
+            _pw_executor.run(_admin_login_api.stop)
+        except Exception:
+            pass
         _admin_login_api = None
         _admin_login_step = None
         if _playwright_lock.locked():
@@ -367,7 +439,7 @@ def post_admin_login_code(params: AdminCodeParams):
 
     try:
         logger.info("[API] 提交管理员验证码 | current_step=%s code_len=%d", _admin_login_step, len(params.code.strip()))
-        result = _admin_login_api.submit_admin_code(params.code.strip())
+        result = _pw_executor.run(_admin_login_api.submit_admin_code, params.code.strip())
         step = result["step"]
         logger.info("[API] 管理员验证码提交返回: step=%s detail=%s", step, result.get("detail"))
         if step == "completed":
@@ -380,7 +452,10 @@ def post_admin_login_code(params: AdminCodeParams):
         raise
     except Exception as exc:
         logger.exception("[API] 管理员验证码提交失败")
-        _admin_login_api.stop()
+        try:
+            _pw_executor.run(_admin_login_api.stop)
+        except Exception:
+            pass
         _admin_login_api = None
         _admin_login_step = None
         if _playwright_lock.locked():
@@ -397,7 +472,7 @@ def post_admin_login_workspace(params: AdminWorkspaceParams):
 
     try:
         logger.info("[API] 提交管理员 workspace 选择 | option_id=%s", params.option_id)
-        result = _admin_login_api.select_workspace_option(params.option_id)
+        result = _pw_executor.run(_admin_login_api.select_workspace_option, params.option_id)
         step = result["step"]
         logger.info("[API] 管理员 workspace 选择返回: step=%s detail=%s", step, result.get("detail"))
         if step == "completed":
@@ -410,7 +485,10 @@ def post_admin_login_workspace(params: AdminWorkspaceParams):
         raise
     except Exception as exc:
         logger.exception("[API] 管理员 workspace 选择失败")
-        _admin_login_api.stop()
+        try:
+            _pw_executor.run(_admin_login_api.stop)
+        except Exception:
+            pass
         _admin_login_api = None
         _admin_login_step = None
         if _playwright_lock.locked():
@@ -423,7 +501,10 @@ def post_admin_login_cancel():
     """取消管理员登录流程。"""
     global _admin_login_api, _admin_login_step
     if _admin_login_api:
-        _admin_login_api.stop()
+        try:
+            _pw_executor.run(_admin_login_api.stop)
+        except Exception:
+            pass
         _admin_login_api = None
         _admin_login_step = None
         if _playwright_lock.locked():
@@ -448,7 +529,10 @@ def post_main_codex_start():
     global _main_codex_flow, _main_codex_step
 
     if _main_codex_flow:
-        _main_codex_flow.stop()
+        try:
+            _pw_executor.run(_main_codex_flow.stop)
+        except Exception:
+            pass
         _main_codex_flow = None
         _main_codex_step = None
         if _playwright_lock.locked():
@@ -462,17 +546,23 @@ def post_main_codex_start():
     try:
         from autoteam.codex_auth import MainCodexSyncFlow
 
-        flow = MainCodexSyncFlow()
-        result = flow.start()
+        def _do_start():
+            flow = MainCodexSyncFlow()
+            result = flow.start()
+            return flow, result
+
+        flow, result = _pw_executor.run(_do_start)
         step = result["step"]
         if step == "completed":
             _main_codex_flow = flow
             return _finish_main_codex_sync()
         if step in ("password_required", "code_required"):
             return _set_pending_main_codex_sync(flow, step)
-        flow.stop()
+        _pw_executor.run(flow.stop)
         _playwright_lock.release()
         raise HTTPException(status_code=400, detail=result.get("detail") or "无法识别主号 Codex 登录步骤")
+    except HTTPException:
+        raise
     except Exception as exc:
         if _playwright_lock.locked():
             _playwright_lock.release()
@@ -487,7 +577,7 @@ def post_main_codex_password(params: AdminPasswordParams):
         raise HTTPException(status_code=409, detail="当前没有等待密码的主号 Codex 登录流程")
 
     try:
-        result = _main_codex_flow.submit_password(params.password)
+        result = _pw_executor.run(_main_codex_flow.submit_password, params.password)
         step = result["step"]
         if step == "completed":
             return _finish_main_codex_sync()
@@ -498,7 +588,10 @@ def post_main_codex_password(params: AdminPasswordParams):
     except HTTPException:
         raise
     except Exception as exc:
-        _main_codex_flow.stop()
+        try:
+            _pw_executor.run(_main_codex_flow.stop)
+        except Exception:
+            pass
         _main_codex_flow = None
         _main_codex_step = None
         if _playwright_lock.locked():
@@ -514,7 +607,7 @@ def post_main_codex_code(params: AdminCodeParams):
         raise HTTPException(status_code=409, detail="当前没有等待验证码的主号 Codex 登录流程")
 
     try:
-        result = _main_codex_flow.submit_code(params.code.strip())
+        result = _pw_executor.run(_main_codex_flow.submit_code, params.code.strip())
         step = result["step"]
         if step == "completed":
             return _finish_main_codex_sync()
@@ -525,7 +618,10 @@ def post_main_codex_code(params: AdminCodeParams):
     except HTTPException:
         raise
     except Exception as exc:
-        _main_codex_flow.stop()
+        try:
+            _pw_executor.run(_main_codex_flow.stop)
+        except Exception:
+            pass
         _main_codex_flow = None
         _main_codex_step = None
         if _playwright_lock.locked():
@@ -538,7 +634,10 @@ def post_main_codex_cancel():
     """取消主号 Codex 登录流程。"""
     global _main_codex_flow, _main_codex_step
     if _main_codex_flow:
-        _main_codex_flow.stop()
+        try:
+            _pw_executor.run(_main_codex_flow.stop)
+        except Exception:
+            pass
         _main_codex_flow = None
         _main_codex_step = None
         if _playwright_lock.locked():
