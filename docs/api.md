@@ -1,0 +1,81 @@
+# HTTP API 文档
+
+启动后访问 `http://localhost:8787/docs` 查看 Swagger 交互式文档。
+
+所有 `/api/*` 端点需要 `Authorization: Bearer <API_KEY>` 认证（除 `/api/auth/check` 和 `/api/setup/*` 外）。
+
+## 即时返回
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/auth/check` | 验证 API Key |
+| GET | `/api/setup/status` | 检查配置是否完整 |
+| POST | `/api/setup/save` | 保存初始配置 |
+| GET | `/api/status` | 账号状态 + 实时额度 |
+| GET | `/api/accounts` | 所有账号列表 |
+| GET | `/api/accounts/active` | 活跃账号 |
+| GET | `/api/accounts/standby` | 待命账号 |
+| GET | `/api/team/members` | Team 全部成员（含外部） |
+| GET | `/api/logs` | 最近日志（支持 `?limit=100&since=0`） |
+| GET | `/api/cpa/files` | CPA 认证文件列表 |
+| GET | `/api/config/auto-check` | 巡检配置 |
+| PUT | `/api/config/auto-check` | 修改巡检配置（运行时生效） |
+| POST | `/api/sync` | 同步认证文件到 CPA |
+| POST | `/api/sync/accounts` | 从 auths 目录同步账号 |
+| POST | `/api/accounts/login` | 触发单账号 Codex 登录 `{"email": "..."}` |
+| POST | `/api/accounts/{email}/kick` | 移出 Team |
+| DELETE | `/api/accounts/{email}` | 删除账号 |
+
+## 后台任务
+
+返回 `202 Accepted` + `task_id`，通过 `/api/tasks/{task_id}` 轮询结果。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/tasks/rotate` | 智能轮转 `{"target": 5}` |
+| POST | `/api/tasks/check` | 检查额度 |
+| POST | `/api/tasks/add` | 添加新账号 |
+| POST | `/api/tasks/fill` | 补满成员 `{"target": 5}` |
+| POST | `/api/tasks/cleanup` | 清理成员 `{"max_seats": null}` |
+| GET | `/api/tasks` | 任务列表 |
+| GET | `/api/tasks/{task_id}` | 任务详情 |
+
+同一时间只允许一个 Playwright 操作，若有任务执行中新请求返回 `409 Conflict`。
+
+## 管理员登录
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/admin/status` | 管理员状态 |
+| POST | `/api/admin/login/start` | 开始登录 `{"email": "admin@example.com"}` |
+| POST | `/api/admin/login/password` | 提交密码 `{"password": "..."}` |
+| POST | `/api/admin/login/code` | 提交验证码 `{"code": "123456"}` |
+| POST | `/api/admin/login/workspace` | 选择组织 `{"option_id": "0"}` |
+| POST | `/api/admin/login/cancel` | 取消登录 |
+| POST | `/api/admin/logout` | 清除登录态 |
+
+## 主号 Codex 同步
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/main-codex/status` | 同步状态 |
+| POST | `/api/main-codex/start` | 开始同步 |
+| POST | `/api/main-codex/password` | 提交密码 |
+| POST | `/api/main-codex/code` | 提交验证码 |
+| POST | `/api/main-codex/cancel` | 取消同步 |
+
+## 调用示例
+
+```bash
+# 查看账号状态
+curl -H "Authorization: Bearer YOUR_KEY" http://localhost:8787/api/status
+
+# 触发轮转
+curl -X POST -H "Authorization: Bearer YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"target": 5}' \
+  http://localhost:8787/api/tasks/rotate
+
+# 查看任务进度
+curl -H "Authorization: Bearer YOUR_KEY" http://localhost:8787/api/tasks/TASK_ID
+```
