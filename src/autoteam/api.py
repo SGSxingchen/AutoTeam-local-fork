@@ -911,6 +911,18 @@ def post_sync():
     return {"message": "同步完成"}
 
 
+@app.post("/api/sync/accounts")
+def post_sync_accounts():
+    """从 auths 目录和 Team 成员同步账号到 accounts.json"""
+    from autoteam.manager import sync_account_states
+
+    sync_account_states()
+    from autoteam.accounts import load_accounts
+
+    accounts = load_accounts()
+    return {"message": f"同步完成，共 {len(accounts)} 个账号", "total": len(accounts)}
+
+
 @app.get("/api/team/members")
 def get_team_members():
     """获取 Team 全部成员（包括手动添加的外部成员）"""

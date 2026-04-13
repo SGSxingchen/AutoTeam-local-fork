@@ -66,6 +66,7 @@ export const api = {
   cancelMainCodexSync: () => request('POST', '/main-codex/cancel'),
 
   postSync: () => request('POST', '/sync'),
+  postSyncAccounts: () => request('POST', '/sync/accounts'),
   postSyncMainCodex: () => request('POST', '/sync/main-codex'),
 
   startRotate: (target = 5) => request('POST', '/tasks/rotate', { target }),

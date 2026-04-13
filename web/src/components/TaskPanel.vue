@@ -58,6 +58,7 @@ const actions = [
   { key: 'add', label: '添加账号', method: 'startAdd', needParam: false, style: 'bg-amber-600 text-white border-amber-500' },
   { key: 'cleanup', label: '清理成员', method: 'startCleanup', needParam: false, style: 'bg-rose-600 text-white border-rose-500' },
   { key: 'sync', label: '同步 CPA', method: 'postSync', needParam: false, sync: true, style: 'bg-gray-700 text-white border-gray-600' },
+  { key: 'sync-accounts', label: '同步账号', method: 'postSyncAccounts', needParam: false, sync: true, style: 'bg-gray-700 text-white border-gray-600' },
 ]
 
 const showParams = ref(false)
