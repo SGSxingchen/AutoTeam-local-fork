@@ -21,7 +21,14 @@ async function request(method, path, body = null) {
   const opts = { method, headers }
   if (body) opts.body = JSON.stringify(body)
   const resp = await fetch(`${BASE}${path}`, opts)
-  const data = await resp.json()
+  let data
+  try {
+    data = await resp.json()
+  } catch {
+    const err = new Error(`HTTP ${resp.status}: 服务器返回了非 JSON 响应`)
+    err.status = resp.status
+    throw err
+  }
   if (!resp.ok) {
     const msg = data?.detail?.message || data?.detail || `HTTP ${resp.status}`
     const err = new Error(msg)

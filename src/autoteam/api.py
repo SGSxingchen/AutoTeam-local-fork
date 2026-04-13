@@ -914,6 +914,11 @@ def post_sync():
 @app.get("/api/team/members")
 def get_team_members():
     """获取 Team 全部成员（包括手动添加的外部成员）"""
+    from autoteam.admin_state import get_admin_session_token, get_chatgpt_account_id
+
+    if not get_admin_session_token() or not get_chatgpt_account_id():
+        raise HTTPException(status_code=400, detail="请先完成管理员登录")
+
     if not _playwright_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail=_current_busy_detail("有任务正在执行，请等待完成后再查询"))
 
