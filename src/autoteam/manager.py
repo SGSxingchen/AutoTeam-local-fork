@@ -791,8 +791,12 @@ def _register_direct_once(mail_client, email, password):
 
                 email_input.fill(email)
                 time.sleep(0.5)
+                screenshot(page, f"direct_02b_email_filled_{attempt}.png")
+                logger.info("[直接注册] 邮箱已填入，点击 Continue...")
                 _click_primary_auth_button(page, email_input, ["Continue", "继续"])
-                time.sleep(3)
+                time.sleep(5)
+                logger.info("[直接注册] 点击 Continue 后 URL: %s", page.url)
+                screenshot(page, f"direct_02c_after_continue_{attempt}.png")
 
                 if not _is_google_redirect(page):
                     break
