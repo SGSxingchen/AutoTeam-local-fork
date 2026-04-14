@@ -917,7 +917,7 @@ def delete_account(email: str):
         if not any(a["email"].lower() == email.lower() for a in accounts):
             raise HTTPException(status_code=404, detail="账号不存在")
 
-        cleanup = delete_managed_account(email)
+        cleanup = _pw_executor.run(delete_managed_account, email)
         return {
             "message": "账号删除完成",
             "deleted_email": email,
@@ -945,18 +945,21 @@ def post_kick_account(email: str):
         if acc["status"] != "active":
             raise HTTPException(status_code=400, detail=f"账号状态为 {acc['status']}，不是 active")
 
-        from autoteam.chatgpt_api import ChatGPTTeamAPI
+        def _do_kick():
+            from autoteam.chatgpt_api import ChatGPTTeamAPI
 
-        chatgpt = ChatGPTTeamAPI()
-        chatgpt.start()
-        try:
-            ok = remove_from_team(chatgpt, email)
-            if ok:
-                update_account(email, status="standby")
-                return {"message": f"已将 {email} 移出 Team", "email": email, "status": "standby"}
-            raise HTTPException(status_code=500, detail=f"移出 {email} 失败")
-        finally:
-            chatgpt.stop()
+            chatgpt = ChatGPTTeamAPI()
+            chatgpt.start()
+            try:
+                return remove_from_team(chatgpt, email)
+            finally:
+                chatgpt.stop()
+
+        ok = _pw_executor.run(_do_kick)
+        if ok:
+            update_account(email, status="standby")
+            return {"message": f"已将 {email} 移出 Team", "email": email, "status": "standby"}
+        raise HTTPException(status_code=500, detail=f"移出 {email} 失败")
     finally:
         _playwright_lock.release()
 
@@ -1066,7 +1069,14 @@ def post_sync_accounts():
     """从 auths 目录和 Team 成员同步账号到 accounts.json"""
     from autoteam.manager import sync_account_states
 
-    sync_account_states()
+    if not _playwright_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail=_current_busy_detail("有任务正在执行，请等待完成后再同步"))
+
+    try:
+        _pw_executor.run(sync_account_states)
+    finally:
+        _playwright_lock.release()
+
     from autoteam.accounts import load_accounts
 
     accounts = load_accounts()
@@ -1085,43 +1095,45 @@ def get_team_members():
         raise HTTPException(status_code=409, detail=_current_busy_detail("有任务正在执行，请等待完成后再查询"))
 
     try:
-        from autoteam.chatgpt_api import ChatGPTTeamAPI
-
-        chatgpt = ChatGPTTeamAPI()
-        chatgpt.start()
-        try:
+        def _fetch_team_members():
             from autoteam.account_ops import fetch_team_state
             from autoteam.accounts import load_accounts
+            from autoteam.chatgpt_api import ChatGPTTeamAPI
 
-            members, invites = fetch_team_state(chatgpt)
-            local_emails = {a["email"].lower() for a in load_accounts()}
+            chatgpt = ChatGPTTeamAPI()
+            chatgpt.start()
+            try:
+                members, invites = fetch_team_state(chatgpt)
+                local_emails = {a["email"].lower() for a in load_accounts()}
 
-            result = []
-            for m in members:
-                email = (m.get("email") or "").lower()
-                result.append(
-                    {
-                        "email": m.get("email", ""),
-                        "role": m.get("role", ""),
-                        "user_id": m.get("user_id") or m.get("id", ""),
-                        "is_local": email in local_emails,
-                        "type": "member",
-                    }
-                )
-            for inv in invites:
-                email = (inv.get("email_address") or inv.get("email") or "").lower()
-                result.append(
-                    {
-                        "email": email,
-                        "role": inv.get("role", ""),
-                        "user_id": inv.get("id", ""),
-                        "is_local": email in local_emails,
-                        "type": "invite",
-                    }
-                )
-            return {"members": result, "total": len(members), "invites": len(invites)}
-        finally:
-            chatgpt.stop()
+                result = []
+                for m in members:
+                    email = (m.get("email") or "").lower()
+                    result.append(
+                        {
+                            "email": m.get("email", ""),
+                            "role": m.get("role", ""),
+                            "user_id": m.get("user_id") or m.get("id", ""),
+                            "is_local": email in local_emails,
+                            "type": "member",
+                        }
+                    )
+                for inv in invites:
+                    email = (inv.get("email_address") or inv.get("email") or "").lower()
+                    result.append(
+                        {
+                            "email": email,
+                            "role": inv.get("role", ""),
+                            "user_id": inv.get("id", ""),
+                            "is_local": email in local_emails,
+                            "type": "invite",
+                        }
+                    )
+                return {"members": result, "total": len(members), "invites": len(invites)}
+            finally:
+                chatgpt.stop()
+
+        return _pw_executor.run(_fetch_team_members)
     finally:
         _playwright_lock.release()
 
@@ -1139,7 +1151,6 @@ def post_team_member_remove(params: TeamMemberRemoveParams):
 
     try:
         from autoteam.accounts import find_account, load_accounts, update_account
-        from autoteam.chatgpt_api import ChatGPTTeamAPI
 
         email = params.email.strip().lower()
         user_id = params.user_id.strip()
@@ -1151,32 +1162,39 @@ def post_team_member_remove(params: TeamMemberRemoveParams):
             raise HTTPException(status_code=400, detail="无效的成员类型")
 
         account_id = get_chatgpt_account_id()
-        chatgpt = ChatGPTTeamAPI()
-        chatgpt.start()
-        try:
-            if member_type == "invite":
-                path = f"/backend-api/accounts/{account_id}/invites/{user_id}"
-                action_text = "取消邀请"
-            else:
-                path = f"/backend-api/accounts/{account_id}/users/{user_id}"
-                action_text = "移出 Team"
 
-            result = chatgpt._api_fetch("DELETE", path)
-            if result["status"] not in (200, 204):
-                raise HTTPException(status_code=500, detail=f"{action_text}失败: HTTP {result['status']}")
+        def _do_remove_team_member():
+            from autoteam.chatgpt_api import ChatGPTTeamAPI
 
-            accounts = load_accounts()
-            acc = find_account(accounts, email)
-            if acc:
-                update_account(email, status="standby")
+            chatgpt = ChatGPTTeamAPI()
+            chatgpt.start()
+            try:
+                if member_type == "invite":
+                    path = f"/backend-api/accounts/{account_id}/invites/{user_id}"
+                    action_text = "取消邀请"
+                else:
+                    path = f"/backend-api/accounts/{account_id}/users/{user_id}"
+                    action_text = "移出 Team"
 
-            return {
-                "message": f"已{action_text}: {email}",
-                "email": email,
-                "type": member_type,
-            }
-        finally:
-            chatgpt.stop()
+                result = chatgpt._api_fetch("DELETE", path)
+                return result, action_text
+            finally:
+                chatgpt.stop()
+
+        result, action_text = _pw_executor.run(_do_remove_team_member)
+        if result["status"] not in (200, 204):
+            raise HTTPException(status_code=500, detail=f"{action_text}失败: HTTP {result['status']}")
+
+        accounts = load_accounts()
+        acc = find_account(accounts, email)
+        if acc:
+            update_account(email, status="standby")
+
+        return {
+            "message": f"已{action_text}: {email}",
+            "email": email,
+            "type": member_type,
+        }
     finally:
         _playwright_lock.release()
 
