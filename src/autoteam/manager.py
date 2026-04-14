@@ -1552,6 +1552,35 @@ def cmd_admin_login(email=None):
         chatgpt.stop()
 
 
+def cmd_admin_session(email=None):
+    """手动导入管理员 session_token 并保存到 state.json。"""
+    email = (email or "").strip()
+    if not email:
+        email = input("管理员邮箱: ").strip()
+
+    if not email:
+        logger.error("[管理员登录] 邮箱不能为空")
+        return None
+
+    session_token = getpass.getpass("session_token（留空取消）: ").strip()
+    if not session_token:
+        logger.warning("[管理员登录] 已取消")
+        return None
+
+    chatgpt = ChatGPTTeamAPI()
+    try:
+        logger.info("[管理员登录] 开始导入 session_token: %s", email)
+        info = chatgpt.import_admin_session(email, session_token)
+        logger.info("[管理员登录] session_token 导入完成: %s", info.get("email") or email)
+        if info.get("account_id"):
+            logger.info("[管理员登录] Workspace ID: %s", info["account_id"])
+        if info.get("workspace_name"):
+            logger.info("[管理员登录] Workspace 名称: %s", info["workspace_name"])
+        return info
+    finally:
+        chatgpt.stop()
+
+
 def cmd_main_codex_sync():
     """交互式同步主号 Codex 认证到 CPA。"""
     state = get_admin_state_summary()
@@ -1816,6 +1845,8 @@ def main():
     sub.add_parser("manual-add", help="手动 OAuth 添加账号（打开链接登录后粘贴回调 URL）")
     admin_login_p = sub.add_parser("admin-login", help="交互式完成管理员主号登录")
     admin_login_p.add_argument("--email", help="管理员邮箱；不传则运行时交互输入")
+    admin_session_p = sub.add_parser("admin-session", help="手动输入 session_token 导入管理员登录态")
+    admin_session_p.add_argument("--email", help="管理员邮箱；不传则运行时交互输入")
     sub.add_parser("main-codex-sync", help="交互式同步主号 Codex 到 CPA")
 
     fill_p = sub.add_parser("fill", help="补满 Team 成员到指定数量")
@@ -1855,6 +1886,8 @@ def main():
         cmd_manual_add()
     elif args.command == "admin-login":
         cmd_admin_login(args.email)
+    elif args.command == "admin-session":
+        cmd_admin_session(args.email)
     elif args.command == "main-codex-sync":
         cmd_main_codex_sync()
     elif args.command == "fill":
