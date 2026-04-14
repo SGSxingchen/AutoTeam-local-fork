@@ -48,12 +48,19 @@
 
       <TeamMembers v-else-if="currentPage === 'team'" />
 
-      <TasksPage v-else-if="currentPage === 'tasks'"
-        :running-task="busyTask" :admin-status="adminStatus" :tasks="tasks"
+      <PoolPage v-else-if="currentPage === 'pool'"
+        :running-task="busyTask" :admin-status="adminStatus"
+        @task-started="onTaskStarted" @refresh="refresh" />
+
+      <SyncPage v-else-if="currentPage === 'sync'"
+        :running-task="busyTask" :admin-status="adminStatus"
         @task-started="onTaskStarted" @refresh="refresh" />
 
       <OAuthPage v-else-if="currentPage === 'oauth'"
         :manual-account-status="manualAccountStatus" @refresh="refresh" @progress="onAdminProgress" />
+
+      <TaskHistoryPage v-else-if="currentPage === 'tasks'"
+        :tasks="tasks" />
 
       <LogViewer v-else-if="currentPage === 'logs'" />
 
@@ -71,11 +78,11 @@ import SetupPage from './components/SetupPage.vue'
 import Sidebar from './components/Sidebar.vue'
 import Dashboard from './components/Dashboard.vue'
 import TeamMembers from './components/TeamMembers.vue'
-import TasksPage from './components/TasksPage.vue'
+import PoolPage from './components/PoolPage.vue'
+import SyncPage from './components/SyncPage.vue'
+import TaskHistoryPage from './components/TaskHistoryPage.vue'
 import LogViewer from './components/LogViewer.vue'
 import OAuthPage from './components/OAuthPage.vue'
-import TaskPanel from './components/TaskPanel.vue'
-import TaskHistory from './components/TaskHistory.vue'
 import Settings from './components/Settings.vue'
 
 const needSetup = ref(false)

@@ -55,8 +55,10 @@ defineEmits(['navigate', 'refresh', 'logout'])
 const items = [
   { key: 'dashboard', icon: '📊', label: '仪表盘', mobileLabel: '仪表盘' },
   { key: 'team', icon: '👥', label: 'Team 成员', mobileLabel: '成员' },
-  { key: 'tasks', icon: '⚡', label: '操作 & 任务', mobileLabel: '操作' },
+  { key: 'pool', icon: '🔁', label: '账号池操作', mobileLabel: '账号池' },
+  { key: 'sync', icon: '🔄', label: '同步中心', mobileLabel: '同步' },
   { key: 'oauth', icon: '🔐', label: 'OAuth 登录', mobileLabel: 'OAuth' },
+  { key: 'tasks', icon: '📜', label: '任务历史', mobileLabel: '任务' },
   { key: 'logs', icon: '📋', label: '日志', mobileLabel: '日志' },
   { key: 'settings', icon: '⚙️', label: '设置', mobileLabel: '设置' },
 ]

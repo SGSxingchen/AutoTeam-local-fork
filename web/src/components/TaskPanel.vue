@@ -1,11 +1,11 @@
 <template>
   <div class="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-4">
-    <h2 class="text-lg font-semibold text-white mb-4">操作</h2>
-    <div v-if="!adminReady" class="mb-4 px-4 py-3 rounded-lg text-sm border bg-amber-500/10 text-amber-300 border-amber-500/20">
-      请先在「设置」页完成管理员登录后，轮转/补满等管理操作才会开放；同步类操作仍可使用。
+    <h2 class="text-lg font-semibold text-white mb-4">{{ panelTitle }}</h2>
+    <div v-if="showAdminHint" class="mb-4 px-4 py-3 rounded-lg text-sm border bg-amber-500/10 text-amber-300 border-amber-500/20">
+      {{ adminHint }}
     </div>
     <div class="flex flex-wrap gap-3">
-      <button v-for="action in actions" :key="action.key"
+      <button v-for="action in visibleActions" :key="action.key"
         @click="execute(action)"
         :disabled="isDisabled(action)"
         class="px-4 py-2 rounded-lg text-sm font-medium transition border"
@@ -48,18 +48,22 @@ const props = defineProps({
     type: Object,
     default: null,
   },
+  mode: {
+    type: String,
+    default: 'all',
+  },
 })
 const emit = defineEmits(['task-started', 'refresh'])
 
 const actions = [
-  { key: 'rotate', label: '智能轮转', method: 'startRotate', needParam: true, paramName: 'target', style: 'bg-blue-600 text-white border-blue-500' },
-  { key: 'check', label: '检查额度', method: 'startCheck', needParam: false, style: 'bg-emerald-600 text-white border-emerald-500' },
-  { key: 'fill', label: '补满成员', method: 'startFill', needParam: true, paramName: 'target', style: 'bg-violet-600 text-white border-violet-500' },
-  { key: 'add', label: '添加账号', method: 'startAdd', needParam: false, style: 'bg-amber-600 text-white border-amber-500' },
-  { key: 'cleanup', label: '清理成员', method: 'startCleanup', needParam: false, style: 'bg-rose-600 text-white border-rose-500' },
-  { key: 'sync', label: '同步 CPA', method: 'postSync', needParam: false, sync: true, allowWithoutAdmin: true, style: 'bg-gray-700 text-white border-gray-600' },
-  { key: 'pull-cpa', label: '拉取 CPA', method: 'postSyncFromCpa', needParam: false, sync: true, allowWithoutAdmin: true, style: 'bg-gray-700 text-white border-gray-600' },
-  { key: 'sync-accounts', label: '同步账号', method: 'postSyncAccounts', needParam: false, sync: true, allowWithoutAdmin: true, style: 'bg-gray-700 text-white border-gray-600' },
+  { key: 'rotate', group: 'pool', label: '智能轮转', method: 'startRotate', needParam: true, paramName: 'target', style: 'bg-blue-600 text-white border-blue-500' },
+  { key: 'check', group: 'pool', label: '检查额度', method: 'startCheck', needParam: false, style: 'bg-emerald-600 text-white border-emerald-500' },
+  { key: 'fill', group: 'pool', label: '补满成员', method: 'startFill', needParam: true, paramName: 'target', style: 'bg-violet-600 text-white border-violet-500' },
+  { key: 'add', group: 'pool', label: '添加账号', method: 'startAdd', needParam: false, style: 'bg-amber-600 text-white border-amber-500' },
+  { key: 'cleanup', group: 'pool', label: '清理成员', method: 'startCleanup', needParam: false, style: 'bg-rose-600 text-white border-rose-500' },
+  { key: 'sync', group: 'sync', label: '同步 CPA', method: 'postSync', needParam: false, sync: true, allowWithoutAdmin: true, style: 'bg-cyan-600 text-white border-cyan-500' },
+  { key: 'pull-cpa', group: 'sync', label: '拉取 CPA', method: 'postSyncFromCpa', needParam: false, sync: true, allowWithoutAdmin: true, style: 'bg-emerald-600 text-white border-emerald-500' },
+  { key: 'sync-accounts', group: 'sync', label: '同步账号', method: 'postSyncAccounts', needParam: false, sync: true, allowWithoutAdmin: true, style: 'bg-sky-600 text-white border-sky-500' },
 ]
 
 const showParams = ref(false)
@@ -69,6 +73,22 @@ const pendingAction = ref(null)
 const message = ref('')
 const messageClass = ref('')
 const adminReady = computed(() => !!props.adminStatus?.configured)
+const visibleActions = computed(() => {
+  if (props.mode === 'all') return actions
+  return actions.filter(action => action.group === props.mode)
+})
+const panelTitle = computed(() => {
+  if (props.mode === 'pool') return '账号池操作'
+  if (props.mode === 'sync') return '同步操作'
+  return '操作'
+})
+const adminHint = computed(() => {
+  if (props.mode === 'sync') {
+    return '同步类操作可独立使用：同步账号、同步 CPA、拉取 CPA。'
+  }
+  return '请先在「设置」页完成管理员登录后，轮转/补满/清理等账号池操作才会开放。'
+})
+const showAdminHint = computed(() => !adminReady.value && (props.mode === 'pool' || props.mode === 'sync'))
 
 function isDisabled(action) {
   if (props.runningTask) return true

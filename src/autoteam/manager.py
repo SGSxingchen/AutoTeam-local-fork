@@ -1159,6 +1159,11 @@ def reinvite_account(chatgpt_api, mail_client, acc):
         logger.info("[轮转] 当前 URL: %s", page.url)
         browser.close()
 
+    if not _is_email_in_team(email):
+        logger.warning("[轮转] 旧账号登录后仍未进入 Team，恢复失败: %s", email)
+        update_account(email, status=STATUS_STANDBY)
+        return False
+
     # 更新状态
     update_account(email, status=STATUS_ACTIVE, last_active_at=time.time())
 
@@ -1251,7 +1256,6 @@ def cmd_rotate(target_seats=5):
         else:
             logger.info("[3/5] 无需移出账号")
 
-        # 检查空缺
         removed_count = len(
             [
                 a
@@ -1374,13 +1378,16 @@ def cmd_rotate(target_seats=5):
             logger.info("[4/5] 复用: %s", email)
             if not chatgpt or not chatgpt.browser:
                 ensure_chatgpt()
-            reinvite_account(chatgpt, ensure_mail(), acc)
-            filled += 1
+            if reinvite_account(chatgpt, ensure_mail(), acc):
+                filled += 1
+                current_count += 1
+            else:
+                skipped.append(acc)
 
         if skipped:
             logger.info("[4/5] 跳过 %d 个额度未恢复的旧号", len(skipped))
 
-        remaining = vacancies - filled
+        remaining = TARGET - current_count
         if remaining <= 0:
             logger.info("[4/5] 已用旧账号填满空缺")
             return
@@ -1391,7 +1398,17 @@ def cmd_rotate(target_seats=5):
             logger.info("[5/5] 创建第 %d/%d 个...", i + 1, remaining)
             if not chatgpt or not chatgpt.browser:
                 ensure_chatgpt()
-            create_new_account(chatgpt, ensure_mail())
+            if create_new_account(chatgpt, ensure_mail()):
+                current_count += 1
+
+        if not chatgpt or not chatgpt.browser:
+            ensure_chatgpt()
+        final_count = get_team_member_count(chatgpt)
+        logger.info("[轮转] 最终 Team 成员数: %d（目标: %d）", final_count, TARGET)
+        if final_count > TARGET:
+            logger.warning("[轮转] 最终 Team 成员数超出目标，后续将按清理逻辑修正")
+        elif 0 <= final_count < TARGET:
+            logger.warning("[轮转] 最终 Team 成员数仍低于目标 (%d/%d)", final_count, TARGET)
 
     finally:
         if chatgpt and chatgpt.browser:
