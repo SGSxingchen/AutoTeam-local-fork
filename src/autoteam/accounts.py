@@ -4,6 +4,8 @@ import json
 import time
 from pathlib import Path
 
+from autoteam.textio import read_text, write_text
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 ACCOUNTS_FILE = PROJECT_ROOT / "accounts.json"
 
@@ -17,7 +19,7 @@ STATUS_PENDING = "pending"  # 已邀请，等待注册完成
 def load_accounts():
     """加载账号列表"""
     if ACCOUNTS_FILE.exists():
-        text = ACCOUNTS_FILE.read_text().strip()
+        text = read_text(ACCOUNTS_FILE).strip()
         if text:
             return json.loads(text)
     return []
@@ -25,7 +27,7 @@ def load_accounts():
 
 def save_accounts(accounts):
     """保存账号列表"""
-    ACCOUNTS_FILE.write_text(json.dumps(accounts, indent=2, ensure_ascii=False))
+    write_text(ACCOUNTS_FILE, json.dumps(accounts, indent=2, ensure_ascii=False))
 
 
 def find_account(accounts, email):

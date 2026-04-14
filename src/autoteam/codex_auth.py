@@ -22,6 +22,7 @@ from autoteam.admin_state import (
     get_chatgpt_workspace_name,
     update_admin_state,
 )
+from autoteam.textio import write_text
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +133,7 @@ def _write_auth_file(filepath, bundle):
         "last_refresh": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
-    filepath.write_text(json.dumps(auth_data, indent=2))
+    write_text(filepath, json.dumps(auth_data, indent=2))
     os.chmod(filepath, 0o600)
     logger.info("[Codex] 认证文件已保存: %s", filepath)
     return str(filepath)

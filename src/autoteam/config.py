@@ -3,13 +3,15 @@
 import os
 from pathlib import Path
 
+from autoteam.textio import read_text
+
 # 项目根目录（pyproject.toml 所在位置）
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 # 加载 .env 文件（从项目根目录）
 _env_file = PROJECT_ROOT / ".env"
 if _env_file.exists():
-    for line in _env_file.read_text().splitlines():
+    for line in read_text(_env_file).splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             key, _, value = line.partition("=")

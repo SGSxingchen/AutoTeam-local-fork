@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from autoteam.config import API_KEY
+from autoteam.textio import read_text
 
 logger = logging.getLogger(__name__)
 
@@ -878,7 +879,7 @@ def get_status():
     for acc in accounts:
         if acc["status"] == STATUS_ACTIVE and acc.get("auth_file") and Path(acc["auth_file"]).exists():
             try:
-                auth_data = json.loads(Path(acc["auth_file"]).read_text())
+                auth_data = json.loads(read_text(Path(acc["auth_file"])))
                 access_token = auth_data.get("access_token")
                 if access_token:
                     status, info = check_codex_quota(access_token)
@@ -1157,7 +1158,7 @@ def _auto_check_loop():
             low_accounts = []
             for acc in active:
                 try:
-                    auth_data = json.loads(Path(acc["auth_file"]).read_text())
+                    auth_data = json.loads(read_text(Path(acc["auth_file"])))
                     access_token = auth_data.get("access_token")
                     if not access_token:
                         continue

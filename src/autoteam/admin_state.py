@@ -17,6 +17,8 @@ import os
 import time
 from pathlib import Path
 
+from autoteam.textio import read_text, write_text
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 STATE_FILE = PROJECT_ROOT / "state.json"
 LEGACY_SESSION_FILE = PROJECT_ROOT / "session"
@@ -40,7 +42,7 @@ def _load_state_from_file(path: Path):
         return {}
 
     try:
-        raw = path.read_text().strip()
+        raw = read_text(path).strip()
     except Exception:
         return {}
 
@@ -61,7 +63,7 @@ def _load_state_from_file(path: Path):
 
 
 def _save_state(state):
-    STATE_FILE.write_text(json.dumps(_normalize_state(state), indent=2, ensure_ascii=False))
+    write_text(STATE_FILE, json.dumps(_normalize_state(state), indent=2, ensure_ascii=False))
     os.chmod(STATE_FILE, 0o600)
 
 

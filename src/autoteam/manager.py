@@ -53,6 +53,7 @@ from autoteam.codex_auth import (
     save_auth_file,
 )
 from autoteam.cpa_sync import sync_to_cpa
+from autoteam.textio import read_text, write_text
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,7 @@ def sync_account_states(chatgpt_api=None):
     if AUTH_DIR.exists():
         for auth_file in AUTH_DIR.glob("codex-*.json"):
             try:
-                auth_data = json.loads(auth_file.read_text())
+                auth_data = json.loads(read_text(auth_file))
                 email = auth_data.get("email", "").lower()
                 if not email or email in local_email_set:
                     continue
@@ -276,7 +277,7 @@ def cmd_status():
         logger.info("[状态] 查询 %d 个 active 账号额度...", active_count)
     for acc in accounts:
         if acc["status"] == STATUS_ACTIVE and acc.get("auth_file") and Path(acc["auth_file"]).exists():
-            auth_data = json.loads(Path(acc["auth_file"]).read_text())
+            auth_data = json.loads(read_text(Path(acc["auth_file"])))
             access_token = auth_data.get("access_token")
             if access_token:
                 status, info = check_codex_quota(access_token)
@@ -296,7 +297,7 @@ def _check_and_refresh(acc):
     if not auth_file or not Path(auth_file).exists():
         return "no_auth", None
 
-    auth_data = json.loads(Path(auth_file).read_text())
+    auth_data = json.loads(read_text(Path(auth_file)))
     access_token = auth_data.get("access_token")
     rt = auth_data.get("refresh_token")
 
@@ -313,7 +314,7 @@ def _check_and_refresh(acc):
             auth_data["access_token"] = new_tokens["access_token"]
             auth_data["refresh_token"] = new_tokens.get("refresh_token", rt)
             auth_data["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            Path(auth_file).write_text(json.dumps(auth_data, indent=2))
+            write_text(Path(auth_file), json.dumps(auth_data, indent=2))
             logger.info("[%s] token 已刷新，重新检查额度...", email)
             status, info = check_codex_quota(new_tokens["access_token"])
         else:
@@ -1171,7 +1172,7 @@ def reinvite_account(chatgpt_api, mail_client, acc):
         # 尝试用已有的 refresh_token
         auth_file = acc.get("auth_file")
         if auth_file and Path(auth_file).exists():
-            auth_data = json.loads(Path(auth_file).read_text())
+            auth_data = json.loads(read_text(Path(auth_file)))
             rt = auth_data.get("refresh_token")
             if rt:
                 new_tokens = refresh_access_token(rt)
@@ -1179,7 +1180,7 @@ def reinvite_account(chatgpt_api, mail_client, acc):
                     auth_data["access_token"] = new_tokens["access_token"]
                     auth_data["refresh_token"] = new_tokens.get("refresh_token", rt)
                     auth_data["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                    Path(auth_file).write_text(json.dumps(auth_data, indent=2))
+                    write_text(Path(auth_file), json.dumps(auth_data, indent=2))
                     logger.info("[轮转] 旧账号已恢复（token 已刷新）: %s", email)
                     return True
         logger.warning("[轮转] 旧账号已登录但 Codex token 刷新失败: %s", email)
@@ -1314,7 +1315,7 @@ def cmd_rotate(target_seats=5):
             quota_ok = False
             if auth_file and Path(auth_file).exists():
                 try:
-                    auth_data = json.loads(Path(auth_file).read_text())
+                    auth_data = json.loads(read_text(Path(auth_file)))
                     access_token = auth_data.get("access_token")
                     if access_token:
                         status_str, info = check_codex_quota(access_token)

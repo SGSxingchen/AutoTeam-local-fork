@@ -16,6 +16,7 @@ from autoteam.admin_state import (
     get_chatgpt_workspace_name,
     update_admin_state,
 )
+from autoteam.textio import read_text
 
 logger = logging.getLogger(__name__)
 
@@ -785,7 +786,7 @@ class ChatGPTTeamAPI:
 
         bearer_file = BASE_DIR / "bearer_token"
         if bearer_file.exists():
-            self.access_token = bearer_file.read_text().strip()
+            self.access_token = read_text(bearer_file).strip()
             logger.info("[ChatGPT] 从 bearer_token 文件加载 access token")
             return
 

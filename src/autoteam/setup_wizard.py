@@ -7,6 +7,7 @@ import secrets
 import sys
 
 from autoteam.config import PROJECT_ROOT
+from autoteam.textio import read_text, write_text
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ def _read_env() -> dict[str, str]:
     """读取 .env 文件为 dict"""
     result = {}
     if ENV_FILE.exists():
-        for line in ENV_FILE.read_text().splitlines():
+        for line in read_text(ENV_FILE).splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, _, value = line.partition("=")
@@ -40,23 +41,23 @@ def _read_env() -> dict[str, str]:
 def _write_env(key: str, value: str):
     """写入或更新 .env 中的某个 key"""
     if ENV_FILE.exists():
-        content = ENV_FILE.read_text()
+        content = read_text(ENV_FILE)
         pattern = rf"^{re.escape(key)}=.*$"
         if re.search(pattern, content, re.MULTILINE):
             content = re.sub(pattern, f"{key}={value}", content, flags=re.MULTILINE)
         else:
             content = content.rstrip() + f"\n{key}={value}\n"
-        ENV_FILE.write_text(content)
+        write_text(ENV_FILE, content)
     else:
         # 从 .env.example 复制再写入
         if ENV_EXAMPLE.exists():
-            content = ENV_EXAMPLE.read_text()
+            content = read_text(ENV_EXAMPLE)
             pattern = rf"^{re.escape(key)}=.*$"
             if re.search(pattern, content, re.MULTILINE):
                 content = re.sub(pattern, f"{key}={value}", content, flags=re.MULTILINE)
-            ENV_FILE.write_text(content)
+            write_text(ENV_FILE, content)
         else:
-            ENV_FILE.write_text(f"{key}={value}\n")
+            write_text(ENV_FILE, f"{key}={value}\n")
 
 
 def _is_interactive() -> bool:
