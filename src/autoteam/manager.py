@@ -1041,7 +1041,7 @@ def _complete_direct_about_you(page):
     return False
 
 
-def _register_direct_once(mail_client, email, password):
+def _register_direct_once(mail_client, email, password, cloudmail_account_id=None):
     """执行一次直接注册，返回是否完成注册并进入 Team。"""
     from playwright.sync_api import sync_playwright
 
@@ -1268,7 +1268,7 @@ def _register_direct_once(mail_client, email, password):
             verification_code = None
             start_t = time.time()
             while time.time() - start_t < MAIL_TIMEOUT:
-                emails = mail_client.search_emails_by_recipient(email, size=10)
+                emails = mail_client.search_emails_by_recipient(email, size=10, account_id=cloudmail_account_id)
                 for em in emails:
                     text = em.get("text", "") or em.get("content", "")
                     match = re.search(r"\b(\d{6})\b", text)
@@ -1337,7 +1337,7 @@ def create_account_direct(mail_client):
     success = False
     for attempt in range(3):
         logger.info("[直接注册] 开始第 %d/3 次注册尝试: %s", attempt + 1, email)
-        success = _register_direct_once(mail_client, email, password)
+        success = _register_direct_once(mail_client, email, password, cloudmail_account_id=account_id)
         if success:
             break
 
