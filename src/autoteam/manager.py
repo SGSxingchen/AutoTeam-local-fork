@@ -40,7 +40,7 @@ from autoteam.accounts import (
     save_accounts,
     update_account,
 )
-from autoteam.admin_state import get_admin_state_summary, get_chatgpt_account_id
+from autoteam.admin_state import get_admin_email, get_admin_state_summary, get_chatgpt_account_id
 from autoteam.chatgpt_api import ChatGPTTeamAPI
 from autoteam.cloudmail import CloudMailClient
 from autoteam.codex_auth import (
@@ -48,16 +48,29 @@ from autoteam.codex_auth import (
     _click_primary_auth_button,
     _is_google_redirect,
     check_codex_quota,
+    get_quota_exhausted_info,
+    get_saved_main_auth_file,
     login_codex_via_browser,
+    quota_result_quota_info,
+    quota_result_resets_at,
     refresh_access_token,
+    refresh_main_auth_file,
     save_auth_file,
 )
-from autoteam.cpa_sync import sync_from_cpa, sync_to_cpa
+from autoteam.cpa_sync import sync_from_cpa, sync_main_codex_to_cpa, sync_to_cpa
 from autoteam.textio import read_text, write_text
 
 logger = logging.getLogger(__name__)
 
 MAIL_TIMEOUT = int(os.environ.get("MAIL_TIMEOUT", "180"))
+
+
+def _normalized_email(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def _is_main_account_email(email: str | None) -> bool:
+    return bool(_normalized_email(email)) and _normalized_email(email) == _normalized_email(get_admin_email())
 
 
 def sync_account_states(chatgpt_api=None):
@@ -114,6 +127,8 @@ def sync_account_states(chatgpt_api=None):
     # Team 中有我们域名但本地无记录的成员 → 自动添加
     if domain_suffix:
         for email in team_emails:
+            if _is_main_account_email(email):
+                continue
             if domain_suffix in email and email not in local_email_set:
                 accounts.append(
                     {
@@ -140,7 +155,7 @@ def sync_account_states(chatgpt_api=None):
             try:
                 auth_data = json.loads(read_text(auth_file))
                 email = auth_data.get("email", "").lower()
-                if not email or email in local_email_set:
+                if not email or email in local_email_set or _is_main_account_email(email):
                     continue
                 # 判断是否在 Team 中
                 in_team = email in team_emails
@@ -283,13 +298,17 @@ def cmd_status():
                 status, info = check_codex_quota(access_token)
                 if status == "ok" and isinstance(info, dict):
                     quota_cache[acc["email"]] = info
+                elif status == "exhausted":
+                    quota_info = quota_result_quota_info(info)
+                    if quota_info:
+                        quota_cache[acc["email"]] = quota_info
 
     _print_status_table(accounts, quota_cache)
 
 
 def _check_and_refresh(acc):
     """检查单个账号额度，401 时自动刷新 token。返回 (status_str, info)
-    info: exhausted 时为 resets_at，ok 时为 quota_info dict
+    info: exhausted 时为 exhausted_info，ok 时为 quota_info dict
     """
     email = acc["email"]
     auth_file = acc.get("auth_file")
@@ -389,7 +408,7 @@ def cmd_check():
 
         accounts = load_accounts()
 
-    all_active = [a for a in accounts if a["status"] == STATUS_ACTIVE]
+    all_active = [a for a in accounts if a["status"] == STATUS_ACTIVE and not _is_main_account_email(a.get("email"))]
 
     # 区分：有认证文件的 vs 无认证文件的
     active_with_auth = []
@@ -451,8 +470,22 @@ def cmd_check():
                 else:
                     logger.info("[%s] 额度可用", email)
             elif status_str == "exhausted":
-                resets_at = info
-                logger.warning("[%s] 额度已用完", email)
+                quota_info = quota_result_quota_info(info) or {}
+                resets_at = quota_result_resets_at(info) or int(time.time() + 18000)
+                if quota_info:
+                    update_account(email, last_quota=quota_info)
+                    p_remain = max(0, 100 - quota_info.get("primary_pct", 0))
+                    w_remain = max(0, 100 - quota_info.get("weekly_pct", 0))
+                    window = info.get("window") if isinstance(info, dict) else ""
+                    logger.warning(
+                        "[%s] %s额度已用完 - 5h剩余: %d%% | 周剩余: %d%%",
+                        email,
+                        "周" if window == "weekly" else "5h和周" if window == "combined" else "5h",
+                        p_remain,
+                        w_remain,
+                    )
+                else:
+                    logger.warning("[%s] 额度已用完", email)
                 update_account(
                     email,
                     status=STATUS_EXHAUSTED,
@@ -464,6 +497,18 @@ def cmd_check():
                 # token 失效，先看历史额度（重置时间已过的不算）
                 lq = acc.get("last_quota")
                 if lq:
+                    exhausted_info = get_quota_exhausted_info(lq)
+                    if exhausted_info:
+                        resets_at = quota_result_resets_at(exhausted_info) or int(time.time() + 18000)
+                        logger.warning("[%s] token 失效，但历史额度显示已用完，直接标记 exhausted", email)
+                        update_account(
+                            email,
+                            status=STATUS_EXHAUSTED,
+                            quota_exhausted_at=time.time(),
+                            quota_resets_at=resets_at,
+                        )
+                        exhausted_list.append(acc)
+                        continue
                     p_resets = lq.get("primary_resets_at", 0)
                     if not (p_resets and time.time() >= p_resets):
                         # 重置时间未过，历史数据有效
@@ -510,11 +555,14 @@ def cmd_check():
                 # 重新检查额度
                 status_str, info = _check_and_refresh(find_account(load_accounts(), email))
                 if status_str == "exhausted":
+                    quota_info = quota_result_quota_info(info)
+                    if quota_info:
+                        update_account(email, last_quota=quota_info)
                     update_account(
                         email,
                         status=STATUS_EXHAUSTED,
                         quota_exhausted_at=time.time(),
-                        quota_resets_at=info,
+                        quota_resets_at=quota_result_resets_at(info) or int(time.time() + 18000),
                     )
                     exhausted_list.append(acc)
                     logger.warning("[%s] 额度已用完", email)
@@ -545,8 +593,12 @@ def cmd_check():
     return exhausted_list
 
 
-def remove_from_team(chatgpt_api, email):
+def remove_from_team(chatgpt_api, email, *, return_status=False):
     """将账号从 Team 中移除"""
+    if _is_main_account_email(email):
+        logger.warning("[Team] 跳过移除主号: %s", email)
+        return "failed" if return_status else False
+
     account_id = get_chatgpt_account_id()
     # 先获取成员列表找到 user_id
     path = f"/backend-api/accounts/{account_id}/users"
@@ -554,14 +606,14 @@ def remove_from_team(chatgpt_api, email):
 
     if result["status"] != 200:
         logger.error("[Team] 获取成员列表失败: %d", result["status"])
-        return False
+        return "failed" if return_status else False
 
     try:
         data = json.loads(result["body"])
         members = data.get("items", data.get("users", data.get("members", [])))
     except Exception:
         logger.error("[Team] 解析成员列表失败")
-        return False
+        return "failed" if return_status else False
 
     # 找到对应邮箱的成员
     target_user_id = None
@@ -574,7 +626,7 @@ def remove_from_team(chatgpt_api, email):
     if not target_user_id:
         logger.info("[Team] 未在成员列表中找到 %s（可能已移出）", email)
         # 可能已经不在 team 了
-        return True
+        return "already_absent" if return_status else True
 
     # 删除成员
     delete_path = f"/backend-api/accounts/{account_id}/users/{target_user_id}"
@@ -582,10 +634,10 @@ def remove_from_team(chatgpt_api, email):
 
     if result["status"] in (200, 204):
         logger.info("[Team] 已将 %s 移出 Team", email)
-        return True
+        return "removed" if return_status else True
     else:
         logger.error("[Team] 移除 %s 失败: %d %s", email, result["status"], result["body"][:200])
-        return False
+        return "failed" if return_status else False
 
 
 def invite_to_team(chatgpt_api, email, seat_type="default"):
@@ -716,20 +768,345 @@ def _is_email_in_team(email):
             chatgpt.stop()
 
 
-def _register_direct_once(mail_client, email, password):
+_DIRECT_EMAIL_SELECTORS = (
+    'input[name="email"], input[type="email"], input[id="email"], '
+    'input[autocomplete="email"], input[autocomplete="username"], '
+    'input[placeholder*="email" i], input[placeholder*="Email" i]'
+)
+_DIRECT_PASSWORD_SELECTORS = 'input[name="password"], input[type="password"]'
+_DIRECT_CODE_SELECTORS = 'input[name="code"], input[placeholder*="验证码"], input[placeholder*="code" i]'
+
+
+def _safe_invite_screenshot(page, name):
+    from autoteam.invite import screenshot
+
+    try:
+        screenshot(page, name)
+    except Exception as exc:
+        logger.debug("[直接注册] 截图失败 %s: %s", name, exc)
+
+
+def _page_excerpt(page, limit=240):
+    try:
+        return page.locator("body").inner_text(timeout=1500)[:limit].replace("\n", " ")
+    except Exception:
+        return ""
+
+
+def _first_visible_editable_locator(page, selectors, timeout=800):
+    try:
+        locator = page.locator(selectors).first
+        if not locator.is_visible(timeout=timeout):
+            return None
+        if locator.is_editable(timeout=timeout):
+            return locator
+    except Exception:
+        return None
+    return None
+
+
+def _collect_date_spinbutton_meta(page):
+    try:
+        return page.evaluate(
+            """() => {
+                const byIdsText = (rawIds) => {
+                    return (rawIds || '')
+                        .split(/\\s+/)
+                        .filter(Boolean)
+                        .map(id => {
+                            const el = document.getElementById(id);
+                            return el ? (el.textContent || '').trim() : '';
+                        })
+                        .filter(Boolean)
+                        .join(' ');
+                };
+
+                return Array.from(document.querySelectorAll('[role="spinbutton"]')).map((el, index) => ({
+                    index,
+                    text: (el.textContent || '').trim(),
+                    ariaLabel: el.getAttribute('aria-label') || '',
+                    ariaValueText: el.getAttribute('aria-valuetext') || '',
+                    ariaValueMin: el.getAttribute('aria-valuemin') || '',
+                    ariaValueMax: el.getAttribute('aria-valuemax') || '',
+                    placeholder: el.getAttribute('placeholder') || '',
+                    dataType: el.getAttribute('data-type') || el.dataset?.type || '',
+                    labelledText: byIdsText(el.getAttribute('aria-labelledby')),
+                    describedText: byIdsText(el.getAttribute('aria-describedby')),
+                }));
+            }"""
+        )
+    except Exception:
+        return []
+
+
+def _infer_date_spinbutton_kind(meta):
+    text_parts = [
+        meta.get("text", ""),
+        meta.get("ariaLabel", ""),
+        meta.get("ariaValueText", ""),
+        meta.get("placeholder", ""),
+        meta.get("dataType", ""),
+        meta.get("labelledText", ""),
+        meta.get("describedText", ""),
+    ]
+    lowered = " ".join(part for part in text_parts if part).lower()
+
+    def _to_int(value):
+        try:
+            return int(str(value).strip())
+        except Exception:
+            return None
+
+    max_val = _to_int(meta.get("ariaValueMax"))
+
+    if any(token in lowered for token in ("year", "yyyy", "yy", "年")):
+        return "year"
+    if any(token in lowered for token in ("month", "mm", "月")):
+        return "month"
+    if any(token in lowered for token in ("day", "dd", "日")):
+        return "day"
+
+    if max_val is not None:
+        if max_val > 31:
+            return "year"
+        if max_val == 12:
+            return "month"
+        if max_val <= 31:
+            return "day"
+
+    return None
+
+
+def _fill_about_you_birthday_by_meta(page):
+    metas = _collect_date_spinbutton_meta(page)
+    if len(metas) < 3:
+        return False
+
+    desired = {"year": "1995", "month": "06", "day": "15"}
+    kind_to_meta = {}
+
+    for meta in metas:
+        kind = _infer_date_spinbutton_kind(meta)
+        if kind and kind not in kind_to_meta:
+            kind_to_meta[kind] = meta
+
+    if not all(kind in kind_to_meta for kind in desired):
+        logger.info("[直接注册] 无法可靠识别生日字段顺序，降级为位置猜测")
+        return False
+
+    try:
+        for kind in ("year", "month", "day"):
+            meta = kind_to_meta[kind]
+            sb = page.locator('[role="spinbutton"]').nth(meta["index"])
+            sb.click(force=True)
+            time.sleep(0.2)
+            try:
+                page.keyboard.press("ControlOrMeta+A")
+                time.sleep(0.1)
+            except Exception:
+                pass
+            page.keyboard.type(desired[kind], delay=80)
+            time.sleep(0.3)
+
+        logger.info(
+            "[直接注册] 已按字段识别填入生日: year=%s month=%s day=%s | order=%s",
+            desired["year"],
+            desired["month"],
+            desired["day"],
+            {kind: kind_to_meta[kind]["index"] for kind in ("year", "month", "day")},
+        )
+        return True
+    except Exception as exc:
+        logger.warning("[直接注册] 按字段填写生日失败，降级为位置猜测: %s", exc)
+        return False
+
+
+def _detect_direct_register_step(page):
+    url = (page.url or "").lower()
+    if _is_google_redirect(page):
+        return "google"
+
+    if "email-verification" in url:
+        return "code"
+    if "about-you" in url:
+        return "profile"
+    if "create-account/password" in url or url.endswith("/password"):
+        return "password"
+    if "chatgpt.com" in url and "auth" not in url:
+        return "completed"
+
+    try:
+        if _first_visible_editable_locator(page, _DIRECT_PASSWORD_SELECTORS, timeout=300):
+            return "password"
+    except Exception:
+        pass
+
+    try:
+        if _first_visible_editable_locator(page, _DIRECT_CODE_SELECTORS, timeout=300):
+            return "code"
+    except Exception:
+        pass
+
+    try:
+        if page.locator('input[name="name"], [role="spinbutton"]').first.is_visible(timeout=300):
+            return "profile"
+    except Exception:
+        pass
+
+    try:
+        if _first_visible_editable_locator(page, _DIRECT_EMAIL_SELECTORS, timeout=300):
+            return "email"
+    except Exception:
+        pass
+
+    if "log-in-or-create-account" in url or url.endswith("/auth/login"):
+        return "email"
+    if "create-account" in url or "password" in url:
+        return "password"
+    return "unknown"
+
+
+def _wait_for_direct_register_step(page, allowed_steps, timeout=15):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        step = _detect_direct_register_step(page)
+        if step in allowed_steps:
+            return step
+        time.sleep(0.5)
+    return _detect_direct_register_step(page)
+
+
+def _wait_for_direct_step_change(page, current_step, timeout=15):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        step = _detect_direct_register_step(page)
+        if step != current_step:
+            return step
+        time.sleep(0.5)
+    return _detect_direct_register_step(page)
+
+
+def _complete_direct_about_you(page):
+    """尽量完成 about-you 页面，兼容不同生日字段顺序。"""
+    if "about-you" not in (page.url or "").lower():
+        return True
+
+    birthday_orders = [
+        ("1995", "06", "15"),
+        ("06", "15", "1995"),
+        ("15", "06", "1995"),
+    ]
+
+    for attempt, values in enumerate(birthday_orders, 1):
+        if "about-you" not in (page.url or "").lower():
+            return True
+
+        try:
+            name_input = page.locator('input[name="name"]').first
+            if name_input.is_visible(timeout=2000):
+                try:
+                    if name_input.is_editable(timeout=500):
+                        name_input.fill("User")
+                        time.sleep(0.3)
+                except Exception:
+                    pass
+        except Exception:
+            name_input = None
+
+        spinbuttons = []
+        try:
+            spinbuttons = page.locator('[role="spinbutton"]').all()
+        except Exception:
+            spinbuttons = []
+
+        if len(spinbuttons) >= 3:
+            filled = _fill_about_you_birthday_by_meta(page)
+            if not filled:
+                for label_sel in ("text=生日日期", "text=Date of birth"):
+                    try:
+                        page.locator(label_sel).first.click(timeout=1000)
+                        time.sleep(0.3)
+                        break
+                    except Exception:
+                        continue
+
+                try:
+                    for sb, val in zip(spinbuttons[:3], values):
+                        sb.click(force=True)
+                        time.sleep(0.2)
+                        try:
+                            page.keyboard.press("ControlOrMeta+A")
+                            time.sleep(0.1)
+                        except Exception:
+                            pass
+                        page.keyboard.type(val, delay=80)
+                        time.sleep(0.3)
+                    logger.info("[直接注册] 尝试按位置填入生日（第 %d 次）: %s/%s/%s", attempt, *values)
+                except Exception as exc:
+                    logger.warning("[直接注册] 生日字段填写失败（第 %d 次）: %s", attempt, exc)
+        else:
+            try:
+                age_input = page.locator(
+                    'input[name="age"], input[placeholder*="年龄"], input[placeholder*="Age"]'
+                ).first
+                if age_input.is_visible(timeout=2000) and age_input.is_editable(timeout=500):
+                    age_input.fill("25")
+                    logger.info("[直接注册] 填入年龄: 25")
+            except Exception:
+                pass
+
+        submitted = False
+        for btn_selector in (
+            'button:has-text("完成帐户创建")',
+            'button:has-text("Create account")',
+            'button:has-text("Continue")',
+            'button:has-text("继续")',
+            'button[type="submit"]',
+        ):
+            try:
+                btn = page.locator(btn_selector).first
+                if btn.is_visible(timeout=1000):
+                    btn.click()
+                    submitted = True
+                    break
+            except Exception:
+                continue
+
+        if not submitted:
+            try:
+                page.keyboard.press("Enter")
+            except Exception:
+                pass
+
+        next_step = _wait_for_direct_register_step(
+            page,
+            {"profile", "completed", "code", "password", "email", "google"},
+            timeout=12,
+        )
+        logger.info("[直接注册] 提交资料后状态: %s | URL: %s", next_step, page.url)
+        if next_step != "profile":
+            return True
+
+    logger.warning("[直接注册] about-you 页面仍未完成 | URL: %s | body=%s", page.url, _page_excerpt(page))
+    return False
+
+
+def _register_direct_once(mail_client, email, password, cloudmail_account_id=None):
     """执行一次直接注册，返回是否完成注册并进入 Team。"""
     from playwright.sync_api import sync_playwright
-
-    from autoteam.invite import screenshot
 
     logger.info("[直接注册] %s", email)
     signup_url = "https://chatgpt.com/auth/login"
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=False,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-        )
+        launch_kwargs = {
+            "headless": False,
+            "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+        }
+        if sys.platform.startswith("win"):
+            launch_kwargs["slow_mo"] = 100
+
+        browser = p.chromium.launch(**launch_kwargs)
         context = browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
@@ -746,16 +1123,11 @@ def _register_direct_once(mail_client, email, password):
             logger.info("[直接注册] 等待 Cloudflare... (%ds)", i * 5)
             time.sleep(5)
 
-        screenshot(page, "direct_01_login_page.png")
+        _safe_invite_screenshot(page, "direct_01_login_page.png")
 
         # OpenAI 首页有多种 A/B 测试变体，需要逐步找到邮箱输入框
-        _email_selectors = (
-            'input[name="email"], input[type="email"], input[id="email"], '
-            'input[autocomplete="email"], input[autocomplete="username"], '
-            'input[placeholder*="email" i], input[placeholder*="Email" i]'
-        )
         try:
-            email_visible = page.locator(_email_selectors).first.is_visible(timeout=3000)
+            email_visible = page.locator(_DIRECT_EMAIL_SELECTORS).first.is_visible(timeout=3000)
             if not email_visible:
                 # 尝试按优先级点击各种按钮来展开/跳转到邮箱输入
                 for sel, desc in [
@@ -775,96 +1147,165 @@ def _register_direct_once(mail_client, email, password):
                         if btn.is_visible(timeout=1000):
                             logger.info("[直接注册] 点击: %s", desc)
                             btn.click()
-                            time.sleep(3)
+                            time.sleep(2)
                             # 检查邮箱输入框是否出现了
-                            if page.locator(_email_selectors).first.is_visible(timeout=3000):
+                            step = _wait_for_direct_register_step(
+                                page,
+                                {"email", "password", "code", "profile", "completed", "google"},
+                                timeout=10,
+                            )
+                            if step != "unknown":
                                 break
                     except Exception:
                         continue
         except Exception:
             pass
 
-        screenshot(page, "direct_02_signup.png")
+        _safe_invite_screenshot(page, "direct_02_signup.png")
 
         logger.info("[直接注册] 输入邮箱: %s", email)
+        email_step = _wait_for_direct_register_step(
+            page,
+            {"email", "password", "code", "profile", "completed", "google"},
+            timeout=15,
+        )
+        logger.info("[直接注册] 邮箱步骤初始状态: %s | URL: %s", email_step, page.url)
+
+        if email_step == "google":
+            logger.warning("[直接注册] 邮箱步骤误跳转到 Google 登录页")
+            browser.close()
+            return False
+        if email_step == "unknown":
+            logger.warning("[直接注册] 未识别到邮箱步骤 | URL: %s | body=%s", page.url, _page_excerpt(page))
+            browser.close()
+            return False
+
         try:
-            for attempt in range(2):
-                email_input = page.locator(
-                    'input[name="email"], input[type="email"], input[id="email"], '
-                    'input[autocomplete="email"], input[autocomplete="username"], '
-                    'input[placeholder*="email" i], input[placeholder*="Email" i]'
-                ).first
-                if not email_input.is_visible(timeout=5000):
+            for attempt in range(3):
+                step = _detect_direct_register_step(page)
+                if step != "email":
                     break
+
+                email_input = _first_visible_editable_locator(page, _DIRECT_EMAIL_SELECTORS, timeout=1500)
+                if not email_input:
+                    logger.info("[直接注册] 邮箱输入框不可编辑，等待页面继续跳转...")
+                    next_step = _wait_for_direct_step_change(page, "email", timeout=10)
+                    if next_step != "email":
+                        break
+                    logger.warning("[直接注册] 邮箱输入框仍不可编辑，继续重试 | URL: %s", page.url)
+                    continue
 
                 email_input.fill(email)
                 time.sleep(0.5)
-                screenshot(page, f"direct_02b_email_filled_{attempt}.png")
-                logger.info("[直接注册] 邮箱已填入，点击 Continue...")
+                logger.info("[直接注册] 邮箱已填入，点击 Continue... (attempt %d)", attempt + 1)
+                _safe_invite_screenshot(page, f"direct_02b_email_filled_{attempt}.png")
                 _click_primary_auth_button(page, email_input, ["Continue", "继续"])
-                time.sleep(5)
-                logger.info("[直接注册] 点击 Continue 后 URL: %s", page.url)
-                screenshot(page, f"direct_02c_after_continue_{attempt}.png")
 
-                if not _is_google_redirect(page):
+                next_step = _wait_for_direct_step_change(page, "email", timeout=15)
+                logger.info("[直接注册] 点击 Continue 后状态: %s | URL: %s", next_step, page.url)
+                _safe_invite_screenshot(page, f"direct_02c_after_continue_{attempt}.png")
+
+                if next_step == "google":
+                    _safe_invite_screenshot(page, f"direct_03_google_redirect_attempt{attempt + 1}.png")
+                    logger.warning("[直接注册] 邮箱步骤误跳转到 Google 登录，返回重试... (attempt %d)", attempt + 1)
+                    page.go_back(wait_until="domcontentloaded", timeout=30000)
+                    time.sleep(2)
+                    continue
+                if next_step != "email":
                     break
 
-                screenshot(page, f"direct_03_google_redirect_attempt{attempt + 1}.png")
-                logger.warning("[直接注册] 邮箱步骤误跳转到 Google 登录，返回重试... (attempt %d)", attempt + 1)
-                page.go_back(wait_until="domcontentloaded", timeout=30000)
-                time.sleep(2)
-        except Exception:
-            pass
+                email_input = _first_visible_editable_locator(page, _DIRECT_EMAIL_SELECTORS, timeout=600)
+                if not email_input:
+                    logger.info("[直接注册] 邮箱框已只读/跳转中，额外等待页面推进...")
+                    next_step = _wait_for_direct_step_change(page, "email", timeout=10)
+                    logger.info("[直接注册] 额外等待后状态: %s | URL: %s", next_step, page.url)
+                    if next_step != "email":
+                        break
 
-        screenshot(page, "direct_03_after_email.png")
-        logger.info("[直接注册] 当前 URL: %s", page.url)
-        if _is_google_redirect(page):
+                logger.warning(
+                    "[直接注册] 点击 Continue 后仍停留在邮箱步骤，准备重试... | URL: %s | body=%s",
+                    page.url,
+                    _page_excerpt(page),
+                )
+        except Exception as exc:
+            logger.warning("[直接注册] 邮箱步骤异常: %s | URL: %s", exc, page.url)
+
+        _safe_invite_screenshot(page, "direct_03_after_email.png")
+        current_step = _detect_direct_register_step(page)
+        logger.info("[直接注册] 邮箱步骤结束状态: %s | URL: %s", current_step, page.url)
+        if current_step == "google":
             logger.warning("[直接注册] 邮箱步骤仍停留在 Google 登录页")
+            browser.close()
+            return False
+        if current_step == "email":
+            logger.warning("[直接注册] 邮箱步骤未推进 | URL: %s | body=%s", page.url, _page_excerpt(page))
             browser.close()
             return False
 
         # 等待页面跳转完成（可能跳到 create-account/password）
-        for _wait in range(10):
-            if "password" in page.url or page.locator('input[type="password"]').count() > 0:
-                break
-            time.sleep(1)
-        logger.info("[直接注册] 密码页检测 URL: %s", page.url)
-        screenshot(page, "direct_03b_before_password.png")
+        password_step = _wait_for_direct_register_step(
+            page,
+            {"password", "code", "profile", "completed", "google", "email"},
+            timeout=15,
+        )
+        logger.info("[直接注册] 密码页检测状态: %s | URL: %s", password_step, page.url)
+        _safe_invite_screenshot(page, "direct_03b_before_password.png")
 
         try:
             for attempt in range(2):
-                pwd_input = page.locator('input[type="password"]').first
-                if not pwd_input.is_visible(timeout=10000):
+                if _detect_direct_register_step(page) != "password":
                     logger.info("[直接注册] 未检测到密码输入框，跳过")
                     break
+
+                pwd_input = _first_visible_editable_locator(page, _DIRECT_PASSWORD_SELECTORS, timeout=1500)
+                if not pwd_input:
+                    logger.info("[直接注册] 密码输入框不可编辑，等待页面继续跳转...")
+                    next_step = _wait_for_direct_step_change(page, "password", timeout=10)
+                    if next_step != "password":
+                        break
+                    logger.warning("[直接注册] 密码输入框仍不可编辑，继续重试 | URL: %s", page.url)
+                    continue
 
                 logger.info("[直接注册] 设置密码")
                 pwd_input.fill(password)
                 time.sleep(0.5)
                 _click_primary_auth_button(page, pwd_input, ["Continue", "继续", "Log in"])
-                time.sleep(5)
+                next_step = _wait_for_direct_step_change(page, "password", timeout=15)
+                logger.info("[直接注册] 提交密码后状态: %s | URL: %s", next_step, page.url)
 
-                if not _is_google_redirect(page):
+                if next_step == "google":
+                    _safe_invite_screenshot(page, f"direct_04_google_redirect_attempt{attempt + 1}.png")
+                    logger.warning("[直接注册] 密码步骤误跳转到 Google 登录，返回重试... (attempt %d)", attempt + 1)
+                    page.go_back(wait_until="domcontentloaded", timeout=30000)
+                    time.sleep(2)
+                    continue
+                if next_step != "password":
                     break
 
-                screenshot(page, f"direct_04_google_redirect_attempt{attempt + 1}.png")
-                logger.warning("[直接注册] 密码步骤误跳转到 Google 登录，返回重试... (attempt %d)", attempt + 1)
-                page.go_back(wait_until="domcontentloaded", timeout=30000)
-                time.sleep(2)
-        except Exception:
-            pass
+                pwd_input = _first_visible_editable_locator(page, _DIRECT_PASSWORD_SELECTORS, timeout=600)
+                if not pwd_input:
+                    logger.info("[直接注册] 密码框已只读/跳转中，额外等待页面推进...")
+                    next_step = _wait_for_direct_step_change(page, "password", timeout=10)
+                    logger.info("[直接注册] 额外等待后状态: %s | URL: %s", next_step, page.url)
+                    if next_step != "password":
+                        break
+        except Exception as exc:
+            logger.warning("[直接注册] 密码步骤异常: %s | URL: %s", exc, page.url)
 
-        screenshot(page, "direct_04_after_password.png")
-        if _is_google_redirect(page):
+        _safe_invite_screenshot(page, "direct_04_after_password.png")
+        current_step = _detect_direct_register_step(page)
+        if current_step == "google":
             logger.warning("[直接注册] 密码步骤仍停留在 Google 登录页")
+            browser.close()
+            return False
+        if current_step == "email":
+            logger.warning("[直接注册] 提交密码前流程回退到邮箱页 | URL: %s | body=%s", page.url, _page_excerpt(page))
             browser.close()
             return False
 
         code_input = None
         try:
-            code_input = page.locator(
-                'input[name="code"], input[placeholder*="验证码"], input[placeholder*="code" i]'
-            ).first
+            code_input = page.locator(_DIRECT_CODE_SELECTORS).first
             if not code_input.is_visible(timeout=5000):
                 code_input = None
         except Exception:
@@ -877,7 +1318,7 @@ def _register_direct_once(mail_client, email, password):
             verification_code = None
             start_t = time.time()
             while time.time() - start_t < MAIL_TIMEOUT:
-                emails = mail_client.search_emails_by_recipient(email, size=10)
+                emails = mail_client.search_emails_by_recipient(email, size=10, account_id=cloudmail_account_id)
                 for em in emails:
                     text = em.get("text", "") or em.get("content", "")
                     match = re.search(r"\b(\d{6})\b", text)
@@ -901,43 +1342,15 @@ def _register_direct_once(mail_client, email, password):
                 browser.close()
                 return False
 
-        screenshot(page, "direct_05_after_code.png")
+        _safe_invite_screenshot(page, "direct_05_after_code.png")
         logger.info("[直接注册] 当前 URL: %s", page.url)
 
-        name_input = page.locator('input[name="name"]').first
         try:
-            if name_input.is_visible(timeout=5000):
-                name_input.fill("User")
-                time.sleep(0.5)
+            _complete_direct_about_you(page)
+        except Exception as exc:
+            logger.warning("[直接注册] about-you 步骤异常: %s | URL: %s", exc, page.url)
 
-                spinbuttons = page.locator('[role="spinbutton"]').all()
-                if len(spinbuttons) >= 3:
-                    try:
-                        page.locator("text=生日日期").click()
-                        time.sleep(0.5)
-                    except Exception:
-                        pass
-                    for sb, val in zip(spinbuttons[:3], ["1995", "06", "15"]):
-                        sb.click(force=True)
-                        time.sleep(0.2)
-                        page.keyboard.type(val, delay=80)
-                        time.sleep(0.3)
-                    logger.info("[直接注册] 填入生日: 1995/06/15")
-                else:
-                    age_input = page.locator('input[name="age"]').first
-                    try:
-                        if age_input.is_visible(timeout=3000):
-                            age_input.fill("25")
-                            logger.info("[直接注册] 填入年龄: 25")
-                    except Exception:
-                        pass
-
-                _click_primary_auth_button(page, name_input, ["完成帐户创建", "Continue", "继续"])
-                time.sleep(8)
-        except Exception:
-            pass
-
-        screenshot(page, "direct_06_after_profile.png")
+        _safe_invite_screenshot(page, "direct_06_after_profile.png")
         logger.info("[直接注册] 当前 URL: %s", page.url)
 
         try:
@@ -948,7 +1361,7 @@ def _register_direct_once(mail_client, email, password):
         except Exception:
             pass
 
-        screenshot(page, "direct_07_final.png")
+        _safe_invite_screenshot(page, "direct_07_final.png")
 
         current_url = page.url
         success = "chatgpt.com" in current_url and "auth" not in current_url and not _is_google_redirect(page)
@@ -974,7 +1387,7 @@ def create_account_direct(mail_client):
     success = False
     for attempt in range(3):
         logger.info("[直接注册] 开始第 %d/3 次注册尝试: %s", attempt + 1, email)
-        success = _register_direct_once(mail_client, email, password)
+        success = _register_direct_once(mail_client, email, password, cloudmail_account_id=account_id)
         if success:
             break
 
@@ -1241,41 +1654,59 @@ def cmd_rotate(target_seats=5):
     try:
         # 移出所有 exhausted 账号（包括之前已标记的）
         all_accounts = load_accounts()
-        all_exhausted = [a for a in all_accounts if a["status"] == STATUS_EXHAUSTED]
+        all_exhausted = [
+            a for a in all_accounts if a["status"] == STATUS_EXHAUSTED and not _is_main_account_email(a.get("email"))
+        ]
+        initial_api_count = -1
+        removed_now = 0
+        already_absent_count = 0
 
         if all_exhausted:
             logger.info("[3/5] 移出 %d 个额度用完的账号...", len(all_exhausted))
             ensure_chatgpt()
+            initial_api_count = get_team_member_count(chatgpt)
             for acc in all_exhausted:
                 email = acc["email"]
                 if not chatgpt.browser:
                     chatgpt.start()
-                if remove_from_team(chatgpt, email):
+                remove_status = remove_from_team(chatgpt, email, return_status=True)
+                if remove_status in ("removed", "already_absent"):
                     update_account(email, status=STATUS_STANDBY)
-                    logger.info("[3/5] %s → standby", email)
+                    if remove_status == "removed":
+                        removed_now += 1
+                        logger.info("[3/5] %s → standby（已从 Team 移出）", email)
+                    else:
+                        already_absent_count += 1
+                        logger.info("[3/5] %s → standby（远端已不存在）", email)
         else:
             logger.info("[3/5] 无需移出账号")
-
-        removed_count = len(
-            [
-                a
-                for a in all_exhausted
-                if find_account(load_accounts(), a["email"])
-                and find_account(load_accounts(), a["email"])["status"] == STATUS_STANDBY
-            ]
-        )
         if not chatgpt or not chatgpt.browser:
             ensure_chatgpt()
         api_count = get_team_member_count(chatgpt)
-        logger.info("[4/5] API 返回成员数: %d（本轮移出: %d）", api_count, removed_count)
+        logger.info(
+            "[4/5] API 返回成员数: %d（实际移出: %d，远端已缺席: %d）",
+            api_count,
+            removed_now,
+            already_absent_count,
+        )
         if api_count <= 0:
             # API 返回异常，用本地 active 账号数兜底
             local_active = sum(1 for a in load_accounts() if a["status"] == STATUS_ACTIVE)
             logger.warning("[4/5] API 成员数异常 (%d)，使用本地 active 数: %d", api_count, local_active)
             current_count = local_active
         else:
-            # API 有缓存延迟，移出后可能返回旧数据，手动修正
-            current_count = max(0, api_count - removed_count)
+            # 保守估算当前成员数：
+            # - api_count 是移除后的最新观察值
+            # - initial_api_count - removed_now 是基于移除前人数的理论下界
+            # 若远端成员本就不存在（already_absent），不能再从 api_count 里额外扣减，否则会少算人数。
+            estimates = [api_count]
+            if initial_api_count > 0 and removed_now > 0:
+                estimates.append(max(0, initial_api_count - removed_now))
+            current_count = min(estimates)
+            if len(estimates) > 1 and current_count != api_count:
+                logger.info(
+                    "[4/5] 成员数保守估算: %d（初始=%d，移出=%d）", current_count, initial_api_count, removed_now
+                )
         vacancies = TARGET - current_count
 
         if vacancies <= 0:
@@ -1284,7 +1715,9 @@ def cmd_rotate(target_seats=5):
                 logger.info("[4/5] Team 超员 (%d/%d)，清理 %d 个多余成员...", current_count, TARGET, excess)
                 # 只移除本地管理的账号，优先移除额度最低的
                 all_accs = load_accounts()
-                local_active = [a for a in all_accs if a["status"] == STATUS_ACTIVE]
+                local_active = [
+                    a for a in all_accs if a["status"] == STATUS_ACTIVE and not _is_main_account_email(a.get("email"))
+                ]
                 # 按额度排序，额度低的优先移除
                 local_active.sort(key=lambda a: 100 - (a.get("last_quota") or {}).get("primary_pct", 0))
                 removed = 0
@@ -1306,7 +1739,7 @@ def cmd_rotate(target_seats=5):
 
         # 优先复用旧账号（先验证额度是否真的恢复了）
         filled = 0
-        standby_list = get_standby_accounts()
+        standby_list = [a for a in get_standby_accounts() if not _is_main_account_email(a.get("email"))]
         skipped = []
 
         for acc in standby_list:
@@ -1324,6 +1757,9 @@ def cmd_rotate(target_seats=5):
                     if access_token:
                         status_str, info = check_codex_quota(access_token)
                         if status_str == "exhausted":
+                            quota_info = quota_result_quota_info(info)
+                            if quota_info:
+                                update_account(email, last_quota=quota_info)
                             logger.info("[4/5] 跳过 %s（额度未恢复）", email)
                             skipped.append(acc)
                             continue
@@ -1390,16 +1826,15 @@ def cmd_rotate(target_seats=5):
         remaining = TARGET - current_count
         if remaining <= 0:
             logger.info("[4/5] 已用旧账号填满空缺")
-            return
-
-        # 必须创建新号
-        logger.info("[5/5] 创建 %d 个新账号...", remaining)
-        for i in range(remaining):
-            logger.info("[5/5] 创建第 %d/%d 个...", i + 1, remaining)
-            if not chatgpt or not chatgpt.browser:
-                ensure_chatgpt()
-            if create_new_account(chatgpt, ensure_mail()):
-                current_count += 1
+        else:
+            # 必须创建新号
+            logger.info("[5/5] 创建 %d 个新账号...", remaining)
+            for i in range(remaining):
+                logger.info("[5/5] 创建第 %d/%d 个...", i + 1, remaining)
+                if not chatgpt or not chatgpt.browser:
+                    ensure_chatgpt()
+                if create_new_account(chatgpt, ensure_mail()):
+                    current_count += 1
 
         if not chatgpt or not chatgpt.browser:
             ensure_chatgpt()
@@ -1472,6 +1907,16 @@ def cmd_manual_add():
         flow.stop()
 
 
+def _refresh_main_auth_after_admin_login():
+    try:
+        info = refresh_main_auth_file()
+        logger.info("[管理员登录] 已保存主号认证文件: %s", info.get("auth_file"))
+        return info
+    except Exception as exc:
+        logger.warning("[管理员登录] 主号认证文件生成失败: %s", exc)
+        return None
+
+
 def cmd_admin_login(email=None):
     """交互式完成管理员登录并保存到 state.json。"""
     email = (email or "").strip()
@@ -1492,6 +1937,8 @@ def cmd_admin_login(email=None):
         while True:
             if step == "completed":
                 info = chatgpt.complete_admin_login()
+                chatgpt.stop()
+                _refresh_main_auth_after_admin_login()
                 logger.info("[管理员登录] 登录完成: %s", info.get("email") or email)
                 if info.get("account_id"):
                     logger.info("[管理员登录] Workspace ID: %s", info["account_id"])
@@ -1552,12 +1999,49 @@ def cmd_admin_login(email=None):
         chatgpt.stop()
 
 
+def cmd_admin_session(email=None):
+    """手动导入管理员 session_token 并保存到 state.json。"""
+    email = (email or "").strip()
+    if not email:
+        email = input("管理员邮箱: ").strip()
+
+    if not email:
+        logger.error("[管理员登录] 邮箱不能为空")
+        return None
+
+    session_token = getpass.getpass("session_token（留空取消）: ").strip()
+    if not session_token:
+        logger.warning("[管理员登录] 已取消")
+        return None
+
+    chatgpt = ChatGPTTeamAPI()
+    try:
+        logger.info("[管理员登录] 开始导入 session_token: %s", email)
+        info = chatgpt.import_admin_session(email, session_token)
+        chatgpt.stop()
+        _refresh_main_auth_after_admin_login()
+        logger.info("[管理员登录] session_token 导入完成: %s", info.get("email") or email)
+        if info.get("account_id"):
+            logger.info("[管理员登录] Workspace ID: %s", info["account_id"])
+        if info.get("workspace_name"):
+            logger.info("[管理员登录] Workspace 名称: %s", info["workspace_name"])
+        return info
+    finally:
+        chatgpt.stop()
+
+
 def cmd_main_codex_sync():
     """交互式同步主号 Codex 认证到 CPA。"""
     state = get_admin_state_summary()
     if not state.get("session_present") or not state.get("email"):
         logger.error("[主号 Codex] 缺少管理员登录态，请先执行 admin-login")
         return None
+
+    saved_auth_file = get_saved_main_auth_file()
+    if saved_auth_file:
+        sync_main_codex_to_cpa(saved_auth_file)
+        logger.info("[主号 Codex] 已直接同步现有认证文件: %s", saved_auth_file)
+        return {"auth_file": saved_auth_file}
 
     flow = MainCodexSyncFlow()
     try:
@@ -1679,7 +2163,7 @@ def cmd_cleanup(max_seats=None):
     """清理多余的 Team 成员，只移除本地 accounts.json 中管理的账号"""
     account_id = get_chatgpt_account_id()
     accounts = load_accounts()
-    local_emails = {a["email"].lower() for a in accounts}
+    local_emails = {a["email"].lower() for a in accounts if not _is_main_account_email(a.get("email"))}
 
     if not local_emails:
         logger.info("[清理] 本地无管理的账号，无需清理")
@@ -1722,7 +2206,8 @@ def cmd_cleanup(max_seats=None):
 
         # 确定要移除的数量
         if max_seats is None:
-            max_seats = len(external_members) + 2  # 保留外部成员 + 2 个本地席位
+            max_seats = 5
+            logger.info("[清理] 未指定上限，使用默认总人数: %d", max_seats)
         to_remove_count = total - max_seats
         if to_remove_count <= 0:
             logger.info("[清理] 成员数 %d 未超过上限 %d，无需清理", total, max_seats)
@@ -1816,6 +2301,8 @@ def main():
     sub.add_parser("manual-add", help="手动 OAuth 添加账号（打开链接登录后粘贴回调 URL）")
     admin_login_p = sub.add_parser("admin-login", help="交互式完成管理员主号登录")
     admin_login_p.add_argument("--email", help="管理员邮箱；不传则运行时交互输入")
+    admin_session_p = sub.add_parser("admin-session", help="手动输入 session_token 导入管理员登录态")
+    admin_session_p.add_argument("--email", help="管理员邮箱；不传则运行时交互输入")
     sub.add_parser("main-codex-sync", help="交互式同步主号 Codex 到 CPA")
 
     fill_p = sub.add_parser("fill", help="补满 Team 成员到指定数量")
@@ -1843,6 +2330,13 @@ def main():
 
         check_and_setup(interactive=True)
 
+    try:
+        from autoteam.auth_storage import ensure_auth_file_permissions
+
+        ensure_auth_file_permissions()
+    except Exception:
+        pass
+
     if args.command == "status":
         cmd_status()
     elif args.command == "check":
@@ -1855,6 +2349,8 @@ def main():
         cmd_manual_add()
     elif args.command == "admin-login":
         cmd_admin_login(args.email)
+    elif args.command == "admin-session":
+        cmd_admin_session(args.email)
     elif args.command == "main-codex-sync":
         cmd_main_codex_sync()
     elif args.command == "fill":

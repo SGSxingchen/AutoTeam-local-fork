@@ -4,7 +4,6 @@ import base64
 import hashlib
 import json
 import logging
-import os
 import re
 import secrets
 import time
@@ -16,18 +15,16 @@ from playwright.sync_api import sync_playwright
 import autoteam.display  # noqa: F401
 from autoteam.admin_state import (
     get_admin_email,
-    get_admin_password,
     get_admin_session_token,
     get_chatgpt_account_id,
     get_chatgpt_workspace_name,
-    update_admin_state,
 )
+from autoteam.auth_storage import AUTH_DIR, ensure_auth_dir, ensure_auth_file_permissions
 from autoteam.textio import write_text
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
-AUTH_DIR = PROJECT_ROOT / "auths"
 SCREENSHOT_DIR = PROJECT_ROOT / "screenshots"
 
 # Codex OAuth 配置
@@ -120,6 +117,7 @@ def _exchange_auth_code(auth_code, code_verifier, fallback_email=None):
 
 def _write_auth_file(filepath, bundle):
     filepath = Path(filepath)
+    ensure_auth_dir()
     filepath.parent.mkdir(exist_ok=True)
 
     auth_data = {
@@ -134,7 +132,7 @@ def _write_auth_file(filepath, bundle):
     }
 
     write_text(filepath, json.dumps(auth_data, indent=2))
-    os.chmod(filepath, 0o600)
+    ensure_auth_file_permissions(filepath)
     logger.info("[Codex] 认证文件已保存: %s", filepath)
     return str(filepath)
 
@@ -188,6 +186,64 @@ def _is_google_redirect(page):
         return "sign in with google" in text[:300]
     except Exception:
         return False
+
+
+_OTP_INPUT_SELECTORS = (
+    'input[name="code"], input[inputmode="numeric"], input[autocomplete="one-time-code"], '
+    'input[placeholder*="验证码"], input[placeholder*="code" i]'
+)
+_OTP_INVALID_HINTS = (
+    "invalid code",
+    "incorrect code",
+    "wrong code",
+    "expired code",
+    "check the code and try again",
+    "验证码无效",
+    "验证码错误",
+    "验证码已过期",
+)
+
+
+def _is_otp_input_visible(page, timeout=500):
+    try:
+        return page.locator(_OTP_INPUT_SELECTORS).first.is_visible(timeout=timeout)
+    except Exception:
+        return False
+
+
+def _detect_otp_error(page):
+    try:
+        body = page.locator("body").inner_text(timeout=1500).lower().replace("\n", " ")
+    except Exception:
+        return None
+
+    for hint in _OTP_INVALID_HINTS:
+        if hint in body:
+            return hint
+    return None
+
+
+def _wait_for_otp_submit_result(page, timeout=12):
+    """
+    等待验证码提交结果：
+    - accepted: 验证码输入框已消失 / 页面已前进
+    - invalid: 页面明确提示验证码错误
+    - pending: 既没报错也没明显前进（常见于页面较慢或状态未稳定）
+    """
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        err = _detect_otp_error(page)
+        if err:
+            return "invalid", err
+        if not _is_otp_input_visible(page, timeout=250):
+            return "accepted", None
+        time.sleep(0.5)
+
+    err = _detect_otp_error(page)
+    if err:
+        return "invalid", err
+    return "pending", None
 
 
 def login_codex_via_browser(email, password, mail_client=None):
@@ -689,7 +745,7 @@ def login_codex_via_browser(email, password, mail_client=None):
 
             # 处理邮箱验证码页面（可能在 consent 流程中出现）
             try:
-                otp_input = page.locator('input[name="code"], input[inputmode="numeric"]').first
+                otp_input = page.locator(_OTP_INPUT_SELECTORS).first
                 if otp_input.is_visible(timeout=2000) and mail_client:
                     import re as _re3
 
@@ -700,8 +756,13 @@ def login_codex_via_browser(email, password, mail_client=None):
                     )
                     otp = None
                     otp_email_id = 0
+                    page_left_code = False
                     t0 = time.time()
                     while time.time() - t0 < 120:
+                        if not _is_otp_input_visible(page, timeout=300):
+                            page_left_code = True
+                            logger.info("[Codex] 验证码页已退出，继续后续授权流程")
+                            break
                         for em in mail_client.search_emails_by_recipient(email, size=5):
                             # 只接受比快照更新的邮件
                             email_id = em.get("emailId", 0)
@@ -723,24 +784,55 @@ def login_codex_via_browser(email, password, mail_client=None):
                             break
                         time.sleep(3)
                     if otp:
-                        _used_email_ids.add(otp_email_id)
-                        otp_input.fill(otp)
-                        time.sleep(0.5)
-                        page.locator(
-                            'button[type="submit"], button:has-text("Continue"), button:has-text("继续")'
-                        ).first.click()
-                        time.sleep(5)
-                        logger.info("[Codex] 已输入验证码: %s", otp)
-                        # 检查验证码是否有效——如果页面还在验证码输入，说明无效
-                        try:
-                            still_code = page.locator('input[name="code"], input[inputmode="numeric"]').first
-                            if still_code.is_visible(timeout=2000):
+                        submit_ok = False
+                        for submit_attempt in range(1, 3):
+                            otp_input = page.locator(_OTP_INPUT_SELECTORS).first
+                            if not otp_input.is_visible(timeout=2000):
+                                submit_ok = True
+                                break
+
+                            otp_input.fill(otp)
+                            time.sleep(0.5)
+                            page.locator(
+                                'button[type="submit"], button:has-text("Continue"), button:has-text("继续")'
+                            ).first.click()
+                            logger.info("[Codex] 已输入验证码: %s", otp)
+
+                            submit_status, submit_detail = _wait_for_otp_submit_result(page, timeout=12)
+                            if submit_status == "accepted":
+                                submit_ok = True
+                                break
+                            if submit_status == "invalid":
+                                _used_email_ids.add(otp_email_id)
+                                detail_suffix = f"，命中提示: {submit_detail}" if submit_detail else ""
                                 logger.warning(
-                                    "[Codex] 验证码邮件 %s（code=%s）无效，标记并跳过该邮件", otp_email_id, otp
+                                    "[Codex] 验证码邮件 %s（code=%s）被页面判定无效%s，标记并跳过该邮件",
+                                    otp_email_id,
+                                    otp,
+                                    detail_suffix,
                                 )
-                                # 不 continue，让循环重新检测当前页面状态
-                        except Exception:
-                            pass
+                                break
+
+                            if submit_attempt < 2:
+                                logger.warning(
+                                    "[Codex] 验证码邮件 %s（code=%s）提交后未确认成功，准备重试第 %d/2 次",
+                                    otp_email_id,
+                                    otp,
+                                    submit_attempt + 1,
+                                )
+                                time.sleep(2)
+                            else:
+                                _used_email_ids.add(otp_email_id)
+                                logger.warning(
+                                    "[Codex] 验证码邮件 %s（code=%s）提交后仍未确认成功，标记并跳过该邮件",
+                                    otp_email_id,
+                                    otp,
+                                )
+
+                        if submit_ok:
+                            _used_email_ids.add(otp_email_id)
+                        continue
+                    if page_left_code:
                         continue
             except Exception:
                 pass
@@ -989,6 +1081,20 @@ class SessionCodexAuthFlow:
         'input[inputmode="numeric"]',
         'input[autocomplete="one-time-code"]',
     ]
+    OTP_OPTION_SELECTORS = [
+        'button:has-text("一次性验证码")',
+        'button:has-text("邮箱验证码")',
+        'button:has-text("Email login")',
+        'button:has-text("email login")',
+        'button:has-text("one-time")',
+        'button:has-text("One-time")',
+        'button:has-text("email code")',
+        'button:has-text("Email code")',
+        'a:has-text("一次性验证码")',
+        'a:has-text("邮箱验证码")',
+        'a:has-text("Email login")',
+        'a:has-text("one-time")',
+    ]
 
     def __init__(
         self,
@@ -1184,6 +1290,23 @@ class SessionCodexAuthFlow:
         time.sleep(5)
         return True
 
+    def _switch_password_to_otp(self):
+        otp_entry = self._visible_locator(self.OTP_OPTION_SELECTORS, timeout_ms=1500)
+        if not otp_entry:
+            return False
+
+        try:
+            otp_entry.click()
+        except Exception:
+            try:
+                otp_entry.click(force=True)
+            except Exception:
+                return False
+
+        logger.info("[Codex] 主号流程检测到密码页，自动切换到一次性验证码登录")
+        time.sleep(3)
+        return True
+
     def _advance(self, attempts=12):
         for _ in range(attempts):
             step, detail = self._detect_step()
@@ -1191,17 +1314,18 @@ class SessionCodexAuthFlow:
                 return {"step": "completed", "detail": detail}
             if step == "code_required":
                 return {"step": "code_required", "detail": detail}
-            if step == "password_required" and not self.password:
-                return {"step": "password_required", "detail": detail}
+            if step == "password_required":
+                if self._switch_password_to_otp():
+                    continue
+                return {
+                    "step": "unsupported_password",
+                    "detail": "主号 Codex 当前停留在密码页，且未找到一次性验证码入口",
+                }
 
             if step == "email_required":
                 if self._auto_fill_email():
                     continue
                 return {"step": "email_required", "detail": detail}
-
-            if step == "password_required" and self.password:
-                if self._auto_fill_password():
-                    continue
 
             if self._click_workspace_or_consent():
                 continue
@@ -1283,8 +1407,8 @@ class MainCodexSyncFlow(SessionCodexAuthFlow):
             session_token=get_admin_session_token(),
             account_id=get_chatgpt_account_id(),
             workspace_name=get_chatgpt_workspace_name(),
-            password=get_admin_password(),
-            password_callback=lambda password: update_admin_state(password=password),
+            password="",
+            password_callback=None,
             auth_file_callback=save_main_auth_file,
         )
 
@@ -1308,7 +1432,7 @@ def login_main_codex():
 
 def save_auth_file(bundle):
     """保存 CPA 兼容的认证文件。同一邮箱只保留一个文件，优先 team。"""
-    AUTH_DIR.mkdir(exist_ok=True)
+    ensure_auth_dir()
 
     email = bundle["email"]
     plan_type = bundle.get("plan_type", "unknown")
@@ -1337,10 +1461,114 @@ def save_main_auth_file(bundle):
     return _write_auth_file(filepath, bundle)
 
 
+def get_saved_main_auth_file():
+    """获取本地已保存的主号 Codex 认证文件路径。"""
+    candidates = []
+    for path in AUTH_DIR.glob("codex-main-*.json"):
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+        except Exception:
+            continue
+        candidates.append((stat.st_mtime, path.name, path))
+
+    if not candidates:
+        return ""
+
+    candidates.sort(reverse=True)
+    return str(candidates[0][2].resolve())
+
+
+def refresh_main_auth_file():
+    """基于已保存的管理员登录态，刷新并保存主号 Codex 认证文件。"""
+    bundle = login_codex_via_session()
+    if not bundle:
+        raise RuntimeError("无法基于管理员登录态生成主号 Codex 认证文件")
+
+    auth_file = save_main_auth_file(bundle)
+    return {
+        "email": bundle.get("email"),
+        "auth_file": auth_file,
+        "plan_type": bundle.get("plan_type"),
+    }
+
+
+def quota_result_quota_info(info):
+    """从 check_codex_quota 返回值中提取额度快照。"""
+    if not isinstance(info, dict):
+        return None
+    quota_info = info.get("quota_info")
+    if isinstance(quota_info, dict):
+        return quota_info
+    if "primary_pct" in info or "weekly_pct" in info:
+        return info
+    return None
+
+
+def quota_result_resets_at(info):
+    """从 check_codex_quota 返回值中提取恢复时间。"""
+    if isinstance(info, dict):
+        value = info.get("resets_at")
+    else:
+        value = info
+
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def get_quota_exhausted_info(quota_info, *, limit_reached=False):
+    """根据额度快照判断是否已耗尽，并返回耗尽详情。"""
+    if not isinstance(quota_info, dict):
+        return None
+
+    primary_pct = int(quota_info.get("primary_pct", 0) or 0)
+    weekly_pct = int(quota_info.get("weekly_pct", 0) or 0)
+    primary_reset = int(quota_info.get("primary_resets_at", 0) or 0)
+    weekly_reset = int(quota_info.get("weekly_resets_at", 0) or 0)
+
+    primary_exhausted = primary_pct >= 100
+    weekly_exhausted = weekly_pct >= 100
+    if not (limit_reached or primary_exhausted or weekly_exhausted):
+        return None
+
+    reset_candidates = []
+    if primary_exhausted and primary_reset:
+        reset_candidates.append(primary_reset)
+    if weekly_exhausted and weekly_reset:
+        reset_candidates.append(weekly_reset)
+
+    if not reset_candidates:
+        if primary_reset:
+            reset_candidates.append(primary_reset)
+        if weekly_reset:
+            reset_candidates.append(weekly_reset)
+
+    resets_at = max(reset_candidates) if reset_candidates else int(time.time() + 18000)
+
+    if primary_exhausted and weekly_exhausted:
+        window = "combined"
+    elif weekly_exhausted:
+        window = "weekly"
+    elif primary_exhausted:
+        window = "primary"
+    else:
+        window = "limit"
+
+    return {
+        "window": window,
+        "resets_at": resets_at,
+        "quota_info": quota_info,
+        "limit_reached": bool(limit_reached),
+    }
+
+
 def check_codex_quota(access_token, account_id=None):
     """
     通过 /backend-api/wham/usage 查询 Codex 额度状态，不消耗额度。
-    返回 ("ok", quota_info) | ("exhausted", resets_at) | ("auth_error", None)
+    返回 ("ok", quota_info) | ("exhausted", exhausted_info) | ("auth_error", None)
     quota_info = {"primary_pct": int, "primary_resets_at": int, "weekly_pct": int, "weekly_resets_at": int}
     """
     import requests
@@ -1388,9 +1616,9 @@ def check_codex_quota(access_token, account_id=None):
         "weekly_resets_at": secondary.get("reset_at", 0),
     }
 
-    # limit_reached 或 5h 额度用完（100%）
-    if rate_limit.get("limit_reached") or quota_info["primary_pct"] >= 100:
-        return "exhausted", quota_info["primary_resets_at"] or (time.time() + 18000)
+    exhausted_info = get_quota_exhausted_info(quota_info, limit_reached=bool(rate_limit.get("limit_reached")))
+    if exhausted_info:
+        return "exhausted", exhausted_info
 
     return "ok", quota_info
 

@@ -7,13 +7,23 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from autoteam.accounts import STATUS_ACTIVE, STATUS_STANDBY, add_account, find_account, load_accounts, update_account
+from autoteam.accounts import (
+    STATUS_ACTIVE,
+    STATUS_EXHAUSTED,
+    STATUS_STANDBY,
+    add_account,
+    find_account,
+    load_accounts,
+    update_account,
+)
 from autoteam.codex_auth import (
     CODEX_CALLBACK_PORT,
     _build_auth_url,
     _exchange_auth_code,
     _generate_pkce,
     check_codex_quota,
+    quota_result_quota_info,
+    quota_result_resets_at,
     save_auth_file,
 )
 from autoteam.cpa_sync import sync_to_cpa
@@ -242,6 +252,13 @@ class ManualAccountFlow:
             quota_status, quota_info = check_codex_quota(token, account_id=account_id)
             if quota_status == "ok" and isinstance(quota_info, dict):
                 update_fields["last_quota"] = quota_info
+            elif quota_status == "exhausted":
+                snapshot = quota_result_quota_info(quota_info)
+                if snapshot:
+                    update_fields["last_quota"] = snapshot
+                update_fields["status"] = STATUS_EXHAUSTED
+                update_fields["quota_exhausted_at"] = time.time()
+                update_fields["quota_resets_at"] = quota_result_resets_at(quota_info) or int(time.time() + 18000)
 
         update_account(email, **update_fields)
         sync_to_cpa()

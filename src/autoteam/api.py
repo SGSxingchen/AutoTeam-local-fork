@@ -320,6 +320,11 @@ class AdminEmailParams(BaseModel):
     email: str
 
 
+class AdminSessionParams(BaseModel):
+    email: str
+    session_token: str
+
+
 class AdminPasswordParams(BaseModel):
     password: str
 
@@ -342,9 +347,21 @@ class TeamMemberRemoveParams(BaseModel):
     type: str
 
 
+def _normalized_email(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def _is_main_account_email(email: str | None) -> bool:
+    from autoteam.admin_state import get_admin_email
+
+    return bool(_normalized_email(email)) and _normalized_email(email) == _normalized_email(get_admin_email())
+
+
 def _sanitize_account(acc: dict) -> dict:
     """脱敏账号信息（去掉 password 等敏感字段）"""
-    return {k: v for k, v in acc.items() if k not in ("password", "cloudmail_account_id")}
+    sanitized = {k: v for k, v in acc.items() if k not in ("password", "cloudmail_account_id")}
+    sanitized["is_main_account"] = _is_main_account_email(acc.get("email"))
+    return sanitized
 
 
 def _admin_status():
@@ -390,6 +407,7 @@ def _manual_account_status():
 def _finish_admin_login(completed: dict):
     global _admin_login_api, _admin_login_step
     api = _admin_login_api
+    info = None
     try:
         info = _pw_executor.run(api.complete_admin_login)
     finally:
@@ -400,6 +418,17 @@ def _finish_admin_login(completed: dict):
                 pass
         _admin_login_api = None
         _admin_login_step = None
+        if info and info.get("session_token") and info.get("account_id"):
+            try:
+                from autoteam.codex_auth import refresh_main_auth_file
+
+                main_auth = _pw_executor.run(refresh_main_auth_file)
+                if main_auth:
+                    info["main_auth"] = main_auth
+                    logger.info("[API] 管理员登录后已刷新主号认证文件: %s", main_auth.get("auth_file"))
+            except Exception as exc:
+                info["main_auth_error"] = str(exc)
+                logger.warning("[API] 管理员登录完成，但刷新主号认证文件失败: %s", exc)
         if _playwright_lock.locked():
             _playwright_lock.release()
     return {"status": "completed", "admin": _admin_status(), "info": info}
@@ -523,6 +552,57 @@ def post_admin_login_start(params: AdminEmailParams):
         if _playwright_lock.locked():
             _playwright_lock.release()
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/admin/login/session")
+def post_admin_login_session(params: AdminSessionParams):
+    """手动导入管理员 session_token。"""
+    global _admin_login_api, _admin_login_step
+
+    if _admin_login_api:
+        post_admin_login_cancel()
+
+    if not _playwright_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail=_current_busy_detail("有任务正在执行，请等待完成后再导入管理员 session_token"),
+        )
+
+    try:
+        from autoteam.chatgpt_api import ChatGPTTeamAPI
+
+        logger.info("[API] 导入管理员 session_token: %s", params.email.strip())
+
+        def _do_import(email, session_token):
+            api = ChatGPTTeamAPI()
+            try:
+                return api.import_admin_session(email, session_token)
+            finally:
+                api.stop()
+
+        info = _pw_executor.run(_do_import, params.email.strip(), params.session_token.strip())
+        if info.get("session_token") and info.get("account_id"):
+            try:
+                from autoteam.codex_auth import refresh_main_auth_file
+
+                main_auth = _pw_executor.run(refresh_main_auth_file)
+                if main_auth:
+                    info["main_auth"] = main_auth
+                    logger.info("[API] session_token 导入后已刷新主号认证文件: %s", main_auth.get("auth_file"))
+            except Exception as exc:
+                info["main_auth_error"] = str(exc)
+                logger.warning("[API] session_token 导入完成，但刷新主号认证文件失败: %s", exc)
+        _admin_login_api = None
+        _admin_login_step = None
+        return {"status": "completed", "admin": _admin_status(), "info": info}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("[API] 导入管理员 session_token 失败")
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        if _playwright_lock.locked():
+            _playwright_lock.release()
 
 
 @app.post("/api/admin/login/password")
@@ -665,6 +745,19 @@ def post_main_codex_start():
         _main_codex_step = None
         if _playwright_lock.locked():
             _playwright_lock.release()
+
+    from autoteam.codex_auth import get_saved_main_auth_file
+    from autoteam.cpa_sync import sync_main_codex_to_cpa
+
+    saved_auth_file = get_saved_main_auth_file()
+    if saved_auth_file:
+        sync_main_codex_to_cpa(saved_auth_file)
+        return {
+            "status": "completed",
+            "message": "主号 Codex 已同步到 CPA",
+            "codex": _main_codex_status(),
+            "info": {"auth_file": saved_auth_file},
+        }
 
     if not _playwright_lock.acquire(blocking=False):
         raise HTTPException(
@@ -843,15 +936,22 @@ def get_accounts():
 def get_codex_auth(email: str):
     """导出账号的 Codex CLI 格式认证文件（~/.codex/auth.json）"""
     from autoteam.accounts import find_account, load_accounts
+    from autoteam.codex_auth import get_saved_main_auth_file
 
     email = email.strip().lower()
-    acc = find_account(load_accounts(), email)
-    if not acc:
-        raise HTTPException(status_code=404, detail="账号不存在")
+    auth_file = ""
 
-    auth_file = acc.get("auth_file")
-    if not auth_file or not Path(auth_file).exists():
-        raise HTTPException(status_code=404, detail="该账号没有认证文件")
+    if _is_main_account_email(email):
+        auth_file = get_saved_main_auth_file()
+        if not auth_file or not Path(auth_file).exists():
+            raise HTTPException(status_code=404, detail="主号没有可导出的认证文件")
+    else:
+        acc = find_account(load_accounts(), email)
+        if not acc:
+            raise HTTPException(status_code=404, detail="账号不存在")
+        auth_file = acc.get("auth_file") or ""
+        if not auth_file or not Path(auth_file).exists():
+            raise HTTPException(status_code=404, detail="该账号没有认证文件")
 
     auth_data = json.loads(Path(auth_file).read_text())
 
@@ -913,6 +1013,9 @@ def delete_account(email: str):
         from autoteam.account_ops import delete_managed_account
         from autoteam.accounts import load_accounts
 
+        if _is_main_account_email(email):
+            raise HTTPException(status_code=400, detail="主号不允许删除")
+
         accounts = load_accounts()
         if not any(a["email"].lower() == email.lower() for a in accounts):
             raise HTTPException(status_code=404, detail="账号不存在")
@@ -938,6 +1041,8 @@ def post_kick_account(email: str):
         from autoteam.manager import remove_from_team
 
         email = email.strip().lower()
+        if _is_main_account_email(email):
+            raise HTTPException(status_code=400, detail="主号不允许移出 Team")
         accounts = load_accounts()
         acc = find_account(accounts, email)
         if not acc:
@@ -974,6 +1079,8 @@ def post_account_login(params: LoginAccountParams):
     from autoteam.accounts import find_account, load_accounts
 
     email = params.email.strip().lower()
+    if _is_main_account_email(email):
+        raise HTTPException(status_code=400, detail="主号不属于账号池登录对象")
     accounts = load_accounts()
     acc = find_account(accounts, email)
     if not acc:
@@ -982,7 +1089,13 @@ def post_account_login(params: LoginAccountParams):
     def _run():
         from autoteam.accounts import STATUS_ACTIVE, update_account
         from autoteam.cloudmail import CloudMailClient
-        from autoteam.codex_auth import check_codex_quota, login_codex_via_browser, save_auth_file
+        from autoteam.codex_auth import (
+            check_codex_quota,
+            login_codex_via_browser,
+            quota_result_quota_info,
+            quota_result_resets_at,
+            save_auth_file,
+        )
 
         mail_client = CloudMailClient()
         mail_client.login()
@@ -999,6 +1112,16 @@ def post_account_login(params: LoginAccountParams):
                     st, info = check_codex_quota(token)
                     if st == "ok" and isinstance(info, dict):
                         update_account(email, last_quota=info)
+                    elif st == "exhausted":
+                        quota_info = quota_result_quota_info(info)
+                        if quota_info:
+                            update_account(email, last_quota=quota_info)
+                        update_account(
+                            email,
+                            status="exhausted",
+                            quota_exhausted_at=time.time(),
+                            quota_resets_at=quota_result_resets_at(info) or int(time.time() + 18000),
+                        )
             # 同步到 CPA
             from autoteam.cpa_sync import sync_to_cpa
 
@@ -1014,7 +1137,7 @@ def post_account_login(params: LoginAccountParams):
 def get_status():
     """获取所有账号状态 + active 账号实时额度"""
     from autoteam.accounts import STATUS_ACTIVE, STATUS_EXHAUSTED, STATUS_PENDING, STATUS_STANDBY, load_accounts
-    from autoteam.codex_auth import check_codex_quota
+    from autoteam.codex_auth import check_codex_quota, quota_result_quota_info
 
     accounts = load_accounts()
     quota_cache = {}
@@ -1028,6 +1151,10 @@ def get_status():
                     status, info = check_codex_quota(access_token)
                     if status == "ok" and isinstance(info, dict):
                         quota_cache[acc["email"]] = info
+                    elif status == "exhausted":
+                        quota_info = quota_result_quota_info(info)
+                        if quota_info:
+                            quota_cache[acc["email"]] = quota_info
             except Exception:
                 pass
 
@@ -1158,6 +1285,8 @@ def post_team_member_remove(params: TeamMemberRemoveParams):
 
         if not email or not user_id:
             raise HTTPException(status_code=400, detail="缺少必要参数")
+        if _is_main_account_email(email):
+            raise HTTPException(status_code=400, detail="主号不允许从 Team 成员页移出")
         if member_type not in ("member", "invite"):
             raise HTTPException(status_code=400, detail="无效的成员类型")
 
@@ -1457,6 +1586,15 @@ def set_auto_check_config(cfg: AutoCheckConfig):
 
 @app.on_event("startup")
 def _start_auto_check():
+    try:
+        from autoteam.auth_storage import ensure_auth_file_permissions
+
+        fixed = ensure_auth_file_permissions()
+        if fixed:
+            logger.info("[启动] 已修复 %d 个 auths 认证文件权限", fixed)
+    except Exception as exc:
+        logger.warning("[启动] 修复 auths 认证文件权限失败: %s", exc)
+
     thread = threading.Thread(target=_auto_check_loop, daemon=True)
     thread.start()
 

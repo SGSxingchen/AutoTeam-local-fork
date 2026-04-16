@@ -4,6 +4,7 @@ import json
 import time
 from pathlib import Path
 
+from autoteam.admin_state import get_admin_email
 from autoteam.textio import read_text, write_text
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -14,6 +15,14 @@ STATUS_ACTIVE = "active"  # 在 team 中，额度可用
 STATUS_EXHAUSTED = "exhausted"  # 在 team 中，额度用完
 STATUS_STANDBY = "standby"  # 已移出 team，等待额度恢复
 STATUS_PENDING = "pending"  # 已邀请，等待注册完成
+
+
+def _normalized_email(value):
+    return (value or "").strip().lower()
+
+
+def _is_main_account_email(email):
+    return bool(_normalized_email(email)) and _normalized_email(email) == _normalized_email(get_admin_email())
 
 
 def load_accounts():
@@ -72,7 +81,7 @@ def update_account(email, **kwargs):
 
 def get_active_accounts():
     """获取所有活跃账号"""
-    return [a for a in load_accounts() if a["status"] == STATUS_ACTIVE]
+    return [a for a in load_accounts() if a["status"] == STATUS_ACTIVE and not _is_main_account_email(a.get("email"))]
 
 
 def get_standby_accounts():
@@ -81,6 +90,8 @@ def get_standby_accounts():
     now = time.time()
     standby = []
     for a in accounts:
+        if _is_main_account_email(a.get("email")):
+            continue
         if a["status"] == STATUS_STANDBY:
             resets_at = a.get("quota_resets_at")
             if resets_at is None:
