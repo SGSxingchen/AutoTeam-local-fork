@@ -5,6 +5,7 @@
     :admin-status="adminStatus"
     @task-started="$emit('task-started')"
     @refresh="$emit('refresh')"
+    @accounts-synced="$emit('accounts-synced', $event)"
   />
 </template>
 
@@ -16,5 +17,5 @@ defineProps({
   adminStatus: Object,
 })
 
-defineEmits(['task-started', 'refresh'])
+defineEmits(['task-started', 'refresh', 'accounts-synced'])
 </script>

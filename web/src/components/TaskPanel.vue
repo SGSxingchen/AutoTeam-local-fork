@@ -124,7 +124,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['task-started', 'refresh'])
+const emit = defineEmits(['task-started', 'refresh', 'accounts-synced'])
 
 const actions = [
   {
@@ -278,7 +278,11 @@ async function doExecute(action, param) {
       const result = await api[action.method]()
       message.value = result.message || '操作完成'
       messageClass.value = 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100'
-      emit('refresh')
+      if (action.key === 'sync-accounts' && Array.isArray(result.accounts)) {
+        emit('accounts-synced', result)
+      } else {
+        emit('refresh')
+      }
     } else {
       const result = await api[action.method](param)
       message.value = `任务已提交：${result.task_id}`

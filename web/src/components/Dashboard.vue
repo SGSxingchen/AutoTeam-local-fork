@@ -171,7 +171,7 @@
         </button>
       </div>
 
-      <div v-if="loading && !status" class="mt-6 space-y-3">
+      <div v-if="loading && !statusData" class="mt-6 space-y-3">
         <div
           v-for="i in 3"
           :key="i"
@@ -351,7 +351,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { api } from '../api.js'
 
 const props = defineProps({
@@ -370,7 +370,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['refresh'])
+const emit = defineEmits(['refresh', 'accounts-synced'])
 
 const actionEmail = ref('')
 const actionType = ref('')
@@ -382,10 +382,18 @@ const messageClass = ref('')
 const searchQuery = ref('')
 const selectedStatus = ref('all')
 const sortKey = ref('attention')
+const localStatus = ref(null)
 
 const adminReady = computed(() => !!props.adminStatus?.configured)
 const actionDisabled = computed(() => !!props.runningTask || !adminReady.value)
-const accounts = computed(() => props.status?.accounts || [])
+const statusData = computed(() => localStatus.value || props.status || null)
+const accounts = computed(() => statusData.value?.accounts || [])
+
+watch(() => props.status, (value) => {
+  if (value) {
+    localStatus.value = null
+  }
+})
 const filterTabs = computed(() => {
   const counts = {
     all: accounts.value.length,
@@ -430,8 +438,8 @@ const filteredAccounts = computed(() => {
   return [...list].sort((a, b) => attentionRank(a) - attentionRank(b) || safeQuota(a) - safeQuota(b) || a.email.localeCompare(b.email))
 })
 const cards = computed(() => {
-  if (!props.status) return []
-  const summary = props.status.summary || {}
+  if (!statusData.value) return []
+  const summary = statusData.value.summary || {}
   return [
     {
       label: '活跃账号',
@@ -490,7 +498,7 @@ const runningTaskCopy = computed(() => {
   return '后台任务进行中时，系统会先保护现场，避免多个动作互相打架。'
 })
 const actionTips = computed(() => {
-  const summary = props.status?.summary || {}
+  const summary = statusData.value?.summary || {}
   const tips = []
 
   if (!adminReady.value) {
@@ -556,7 +564,7 @@ function statusDescription(status) {
 }
 
 function quota(account, type) {
-  const quotaInfo = props.status?.quota_cache?.[account.email] || account.last_quota
+  const quotaInfo = statusData.value?.quota_cache?.[account.email] || account.last_quota
   if (!quotaInfo) return null
   const pct = type === 'primary' ? quotaInfo.primary_pct : quotaInfo.weekly_pct
   return 100 - (pct || 0)
@@ -568,7 +576,7 @@ function quotaText(account, type) {
 }
 
 function quotaReset(account, type) {
-  const quotaInfo = props.status?.quota_cache?.[account.email] || account.last_quota
+  const quotaInfo = statusData.value?.quota_cache?.[account.email] || account.last_quota
   if (!quotaInfo) return '未知'
   const timestamp = type === 'primary' ? quotaInfo.primary_resets_at : quotaInfo.weekly_resets_at
   if (!timestamp) return '未知'
@@ -670,8 +678,16 @@ async function syncAccounts() {
   syncing.value = true
   try {
     const result = await api.postSyncAccounts()
+    if (Array.isArray(result.accounts)) {
+      localStatus.value = {
+        accounts: result.accounts,
+        summary: result.summary || {},
+        quota_cache: statusData.value?.quota_cache || {},
+      }
+      emit('accounts-synced', result)
+    }
+    result.message = result.message || '\u8d26\u53f7\u72b6\u6001\u540c\u6b65\u5b8c\u6210'
     showMessage(result.message || '账号状态同步完成')
-    emit('refresh')
   } catch (e) {
     showMessage(e.message, 'error')
   } finally {

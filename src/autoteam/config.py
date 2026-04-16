@@ -22,6 +22,11 @@ def _get_int_env(name: str, default: int) -> int:
     return int(parse_env_value(os.environ.get(name, str(default))))
 
 
+def _get_bool_env(name: str, default: bool) -> bool:
+    value = parse_env_value(os.environ.get(name, "1" if default else "0")).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
 # CloudMail 配置
 CLOUDMAIL_BASE_URL = os.environ.get("CLOUDMAIL_BASE_URL", "")
 CLOUDMAIL_EMAIL = os.environ.get("CLOUDMAIL_EMAIL", "")
@@ -46,3 +51,4 @@ API_KEY = os.environ.get("API_KEY", "")
 AUTO_CHECK_INTERVAL = _get_int_env("AUTO_CHECK_INTERVAL", 300)  # 巡检间隔（秒），默认 5 分钟
 AUTO_CHECK_THRESHOLD = _get_int_env("AUTO_CHECK_THRESHOLD", 10)  # 额度低于此百分比触发轮转，默认 10%
 AUTO_CHECK_MIN_LOW = _get_int_env("AUTO_CHECK_MIN_LOW", 2)  # 至少几个账号低于阈值才触发，默认 2
+PLAYWRIGHT_HEADLESS = _get_bool_env("PLAYWRIGHT_HEADLESS", False)

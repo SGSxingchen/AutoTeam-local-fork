@@ -21,6 +21,7 @@ from autoteam.admin_state import (
     get_chatgpt_workspace_name,
     update_admin_state,
 )
+from autoteam.playwright_config import browser_context_kwargs, chromium_launch_kwargs
 from autoteam.auth_storage import AUTH_DIR, ensure_auth_dir, ensure_auth_file_permissions
 from autoteam.textio import write_text
 
@@ -267,14 +268,8 @@ def login_codex_via_browser(email, password, mail_client=None):
     auth_code = None
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=False,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-        )
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-        )
+        browser = p.chromium.launch(**chromium_launch_kwargs())
+        context = browser.new_context(**browser_context_kwargs())
 
         # === Step 0: 先登录 ChatGPT 并切换到 Team workspace ===
         # 登录前就注入 _account cookie，引导登录流程进入 Team workspace

@@ -115,7 +115,7 @@
       />
 
       <div class="min-w-0 flex-1 space-y-4 md:space-y-6">
-        <header class="app-card sticky top-4 z-20 overflow-hidden px-5 py-5 md:px-6 md:py-6">
+        <header class="app-card overflow-hidden px-5 py-5 md:px-6 md:py-6">
           <div class="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(34,211,238,0.14),transparent_32%),radial-gradient(circle_at_bottom_left,rgba(56,189,248,0.1),transparent_28%)]"></div>
           <div class="relative space-y-5">
             <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
@@ -190,6 +190,7 @@
               :running-task="busyTask"
               :admin-status="adminStatus"
               @refresh="refresh"
+              @accounts-synced="onAccountsSynced"
             />
 
             <TeamMembers v-else-if="currentPage === 'team'" />
@@ -208,6 +209,7 @@
               :admin-status="adminStatus"
               @task-started="onTaskStarted"
               @refresh="refresh"
+              @accounts-synced="onAccountsSynced"
             />
 
             <OAuthPage
@@ -252,6 +254,7 @@ import Settings from './components/Settings.vue'
 const IDLE_POLL_MS = 60000
 const ACTIVE_POLL_MS = 8000
 const PAGE_KEY = 'autoteam_current_page'
+const APP_SNAPSHOT_KEY = 'autoteam_app_snapshot'
 
 const needSetup = ref(false)
 const authenticated = ref(false)
@@ -344,6 +347,74 @@ const lastUpdatedLabel = computed(() => formatLastUpdated(lastUpdated.value))
 
 let pollTimer = null
 
+function syncRunningTask(taskList = tasks.value) {
+  runningTask.value = taskList.find(task => task.status === 'running' || task.status === 'pending') || null
+}
+
+function applyAppSnapshot(snapshot) {
+  status.value = snapshot?.status || null
+  tasks.value = Array.isArray(snapshot?.tasks) ? snapshot.tasks : []
+  adminStatus.value = snapshot?.adminStatus || null
+  codexStatus.value = snapshot?.codexStatus || null
+  manualAccountStatus.value = snapshot?.manualAccountStatus || null
+  lastUpdated.value = snapshot?.lastUpdated || 0
+  syncRunningTask(tasks.value)
+}
+
+function restoreAppSnapshot() {
+  try {
+    const raw = localStorage.getItem(APP_SNAPSHOT_KEY)
+    if (!raw) return false
+    const snapshot = JSON.parse(raw)
+    if (!snapshot || typeof snapshot !== 'object') return false
+    applyAppSnapshot(snapshot)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function persistAppSnapshot() {
+  if (!status.value && !tasks.value.length && !adminStatus.value && !codexStatus.value && !manualAccountStatus.value) {
+    return
+  }
+
+  try {
+    localStorage.setItem(APP_SNAPSHOT_KEY, JSON.stringify({
+      status: status.value,
+      tasks: tasks.value,
+      adminStatus: adminStatus.value,
+      codexStatus: codexStatus.value,
+      manualAccountStatus: manualAccountStatus.value,
+      lastUpdated: lastUpdated.value,
+    }))
+  } catch {}
+}
+
+function clearAppSnapshot() {
+  try {
+    localStorage.removeItem(APP_SNAPSHOT_KEY)
+  } catch {}
+}
+
+function onAccountsSynced(result) {
+  if (!Array.isArray(result?.accounts)) return
+
+  status.value = {
+    accounts: result.accounts,
+    summary: result.summary || {},
+    quota_cache: status.value?.quota_cache || {},
+  }
+  lastUpdated.value = Date.now()
+  persistAppSnapshot()
+}
+
+function bootstrapConsole() {
+  restoreAppSnapshot()
+  refresh()
+  startPolling(IDLE_POLL_MS)
+}
+
 async function checkAuth() {
   try {
     const result = await api.checkAuth()
@@ -373,8 +444,7 @@ async function doLogin() {
       authError.value = 'API Key 无效'
     } else {
       inputKey.value = ''
-      await refresh()
-      startPolling(IDLE_POLL_MS)
+      bootstrapConsole()
     }
   } catch (e) {
     clearApiKey()
@@ -386,6 +456,7 @@ async function doLogin() {
 
 function doLogout() {
   clearApiKey()
+  clearAppSnapshot()
   authenticated.value = false
   stopPolling()
 }
@@ -393,22 +464,45 @@ function doLogout() {
 async function refresh() {
   loading.value = true
   try {
-    const [s, t, admin, codex, manualAccount] = await Promise.all([
-      api.getStatus(),
-      api.getTasks(),
-      api.getAdminStatus(),
-      api.getMainCodexStatus(),
-      api.getManualAccountStatus(),
+    const results = await Promise.allSettled([
+      api.getTasks().then(taskList => {
+        tasks.value = taskList
+        syncRunningTask(taskList)
+      }),
+      api.getAdminStatus().then(result => {
+        adminStatus.value = result
+      }),
+      api.getMainCodexStatus().then(result => {
+        codexStatus.value = result
+      }),
+      api.getManualAccountStatus().then(result => {
+        manualAccountStatus.value = result
+      }),
+      api.getStatus().then(result => {
+        status.value = result
+      }),
     ])
-    status.value = s
-    tasks.value = t
-    adminStatus.value = admin
-    codexStatus.value = codex
-    manualAccountStatus.value = manualAccount
-    runningTask.value = t.find(task => task.status === 'running' || task.status === 'pending') || null
-    lastUpdated.value = Date.now()
+
+    const authFailure = results.find(result => result.status === 'rejected' && result.reason?.status === 401)
+    if (authFailure) {
+      clearAppSnapshot()
+      authenticated.value = false
+      return
+    }
+
+    if (results.some(result => result.status === 'fulfilled')) {
+      lastUpdated.value = Date.now()
+      persistAppSnapshot()
+    }
+
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        console.error('Partial refresh failed:', result.reason)
+      }
+    }
   } catch (e) {
     if (e.status === 401) {
+      clearAppSnapshot()
       authenticated.value = false
       return
     }
@@ -465,8 +559,7 @@ function onSetupDone() {
   needSetup.value = false
   checkAuth().then(async ok => {
     if (ok) {
-      await refresh()
-      startPolling(IDLE_POLL_MS)
+      bootstrapConsole()
     }
   })
 }
@@ -499,8 +592,7 @@ onMounted(async () => {
 
   const ok = await checkAuth()
   if (ok) {
-    await refresh()
-    startPolling(IDLE_POLL_MS)
+    bootstrapConsole()
   }
 })
 

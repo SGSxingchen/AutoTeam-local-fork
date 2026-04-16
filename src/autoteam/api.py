@@ -364,6 +364,18 @@ def _sanitize_account(acc: dict) -> dict:
     return sanitized
 
 
+def _account_summary(accounts: list[dict]) -> dict:
+    from autoteam.accounts import STATUS_ACTIVE, STATUS_EXHAUSTED, STATUS_PENDING, STATUS_STANDBY
+
+    return {
+        "active": sum(1 for a in accounts if a["status"] == STATUS_ACTIVE),
+        "standby": sum(1 for a in accounts if a["status"] == STATUS_STANDBY),
+        "exhausted": sum(1 for a in accounts if a["status"] == STATUS_EXHAUSTED),
+        "pending": sum(1 for a in accounts if a["status"] == STATUS_PENDING),
+        "total": len(accounts),
+    }
+
+
 def _admin_status():
     from autoteam.admin_state import get_admin_state_summary
 
@@ -1155,13 +1167,7 @@ def get_status():
             except Exception:
                 pass
 
-    summary = {
-        "active": sum(1 for a in accounts if a["status"] == STATUS_ACTIVE),
-        "standby": sum(1 for a in accounts if a["status"] == STATUS_STANDBY),
-        "exhausted": sum(1 for a in accounts if a["status"] == STATUS_EXHAUSTED),
-        "pending": sum(1 for a in accounts if a["status"] == STATUS_PENDING),
-        "total": len(accounts),
-    }
+    summary = _account_summary(accounts)
 
     return {
         "accounts": [_sanitize_account(a) for a in accounts],
@@ -1197,7 +1203,13 @@ def post_sync_accounts():
     from autoteam.accounts import load_accounts
 
     accounts = load_accounts()
-    return {"message": f"同步完成，共 {len(accounts)} 个账号", "total": len(accounts)}
+    summary = _account_summary(accounts)
+    return {
+        "message": f"\u540c\u6b65\u5b8c\u6210\uff0c\u5171 {len(accounts)} \u4e2a\u8d26\u53f7",
+        "total": len(accounts),
+        "accounts": [_sanitize_account(a) for a in accounts],
+        "summary": summary,
+    }
 
 
 @app.get("/api/team/members")

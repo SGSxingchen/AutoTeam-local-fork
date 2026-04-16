@@ -58,6 +58,7 @@ from autoteam.codex_auth import (
     save_auth_file,
 )
 from autoteam.cpa_sync import sync_from_cpa, sync_main_codex_to_cpa, sync_to_cpa
+from autoteam.playwright_config import browser_context_kwargs, chromium_launch_kwargs
 from autoteam.textio import read_text, write_text
 
 logger = logging.getLogger(__name__)
@@ -664,14 +665,8 @@ def _complete_registration(email, password, invite_link, mail_client):
 
     logger.info("[注册] 开始注册 %s...", email)
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=False,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-        )
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-        )
+        browser = p.chromium.launch(**chromium_launch_kwargs())
+        context = browser.new_context(**browser_context_kwargs())
         page = context.new_page()
         result, password = register_with_invite(page, invite_link, email, mail_client, password=password)
         browser.close()
@@ -1103,18 +1098,8 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
     signup_url = "https://chatgpt.com/auth/login"
 
     with sync_playwright() as p:
-        launch_kwargs = {
-            "headless": False,
-            "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-        }
-        if sys.platform.startswith("win"):
-            launch_kwargs["slow_mo"] = 100
-
-        browser = p.chromium.launch(**launch_kwargs)
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-        )
+        browser = p.chromium.launch(**chromium_launch_kwargs())
+        context = browser.new_context(**browser_context_kwargs())
         page = context.new_page()
 
         page.goto(signup_url, wait_until="domcontentloaded", timeout=60000)
@@ -1466,14 +1451,8 @@ def reinvite_account(chatgpt_api, mail_client, acc):
         chatgpt_api.stop()
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=False,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-        )
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-        )
+        browser = p.chromium.launch(**chromium_launch_kwargs())
+        context = browser.new_context(**browser_context_kwargs())
         page = context.new_page()
 
         # 直接去登录页
