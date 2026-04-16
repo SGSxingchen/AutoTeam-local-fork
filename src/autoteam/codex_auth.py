@@ -15,9 +15,11 @@ from playwright.sync_api import sync_playwright
 import autoteam.display  # noqa: F401
 from autoteam.admin_state import (
     get_admin_email,
+    get_admin_password,
     get_admin_session_token,
     get_chatgpt_account_id,
     get_chatgpt_workspace_name,
+    update_admin_state,
 )
 from autoteam.auth_storage import AUTH_DIR, ensure_auth_dir, ensure_auth_file_permissions
 from autoteam.textio import write_text
@@ -562,7 +564,10 @@ def login_codex_via_browser(email, password, mail_client=None):
         if "about-you" in page.url:
             logger.info("[Codex] 检测到 about-you 页面，填写个人信息...")
             try:
-                name_input = page.locator('input[name="name"]').first
+                name_input = page.locator(
+                    'input[name="name"], input[name="full_name"], input[name="fullName"], '
+                    'input[autocomplete="name"], input[placeholder*="name" i]'
+                ).first
                 if name_input.is_visible(timeout=3000):
                     name_input.fill("User")
 
@@ -593,7 +598,7 @@ def login_codex_via_browser(email, password, mail_client=None):
 
                 time.sleep(0.5)
                 page.locator(
-                    'button:has-text("继续"), button:has-text("Continue"), button:has-text("完成帐户创建"), button[type="submit"]'
+                    'button:has-text("Finish"), button:has-text("继续"), button:has-text("Continue"), button:has-text("完成帐户创建"), button[type="submit"]'
                 ).first.click()
                 time.sleep(5)
                 _screenshot(page, "codex_03d_after_aboutyou.png")
@@ -1074,6 +1079,20 @@ class SessionCodexAuthFlow:
         'input[name="password"]',
         'input[type="password"]',
     ]
+    ONE_TIME_CODE_SELECTORS = [
+        'button:has-text("Log in with a one-time code")',
+        'a:has-text("Log in with a one-time code")',
+        '[role="button"]:has-text("Log in with a one-time code")',
+        'button:has-text("one-time code")',
+        'a:has-text("one-time code")',
+        '[role="button"]:has-text("one-time code")',
+        'button:has-text("一次性验证码")',
+        'a:has-text("一次性验证码")',
+        '[role="button"]:has-text("一次性验证码")',
+        'button:has-text("email login")',
+        'a:has-text("email login")',
+        '[role="button"]:has-text("email login")',
+    ]
     CODE_SELECTORS = [
         'input[name="code"]',
         'input[placeholder*="验证码"]',
@@ -1120,6 +1139,11 @@ class SessionCodexAuthFlow:
         self.auth_code = None
         self.chatgpt = None
         self.page = None
+        self.mail_client = None
+        self._mail_client_failed = False
+        self._own_mail_client = False
+        self._email_id_before_login = 0
+        self._used_email_ids = set()
 
     def _visible_locator(self, selectors, timeout_ms=5000):
         if not self.page:
@@ -1140,17 +1164,39 @@ class SessionCodexAuthFlow:
             time.sleep(0.2)
         return None
 
+    def _capture_auth_code_from_url(self, url, source="url"):
+        if not url or self.auth_code:
+            return self.auth_code
+        if f"localhost:{CODEX_CALLBACK_PORT}/auth/callback" not in url:
+            return self.auth_code
+
+        try:
+            parsed = urllib.parse.urlparse(url)
+            qs = urllib.parse.parse_qs(parsed.query)
+            code = qs.get("code", [None])[0]
+        except Exception:
+            code = None
+
+        if code:
+            self.auth_code = code
+            logger.info("[Codex] 已从%s捕获 authorization code", source)
+        return self.auth_code
+
+    def _body_text(self, timeout_ms=1200):
+        if not self.page:
+            return ""
+        try:
+            return self.page.locator("body").inner_text(timeout=timeout_ms).lower()
+        except Exception:
+            return ""
+
     def _detect_step(self):
         if self.auth_code:
             return "completed", None
 
         cur = self.page.url if self.page else ""
-        if f"localhost:{CODEX_CALLBACK_PORT}/auth/callback" in cur:
-            parsed = urllib.parse.urlparse(cur)
-            qs = urllib.parse.parse_qs(parsed.query)
-            self.auth_code = qs.get("code", [None])[0]
-            if self.auth_code:
-                return "completed", None
+        if self._capture_auth_code_from_url(cur, source="当前URL"):
+            return "completed", None
 
         if self._visible_locator(self.CODE_SELECTORS, timeout_ms=800):
             return "code_required", None
@@ -1158,25 +1204,33 @@ class SessionCodexAuthFlow:
             return "password_required", None
         if self._visible_locator(self.EMAIL_SELECTORS, timeout_ms=800):
             return "email_required", None
+
+        body = self._body_text()
+        if "enter your password" in body or "log in with a one-time code" in body:
+            return "password_required", None
+        if "enter code" in body or "verification code" in body or "one-time code" in body:
+            return "code_required", None
+        if "email address" in body and "continue" in body:
+            return "email_required", None
         return "unknown", cur
 
     def _attach_callback_listeners(self):
         def on_request(request):
-            if f"localhost:{CODEX_CALLBACK_PORT}/auth/callback" in request.url:
-                parsed = urllib.parse.urlparse(request.url)
-                qs = urllib.parse.parse_qs(parsed.query)
-                self.auth_code = qs.get("code", [None])[0]
+            self._capture_auth_code_from_url(request.url, source="请求")
 
         def on_response(response):
             if self.auth_code:
                 return
-            if f"localhost:{CODEX_CALLBACK_PORT}/auth/callback" in response.url:
-                parsed = urllib.parse.urlparse(response.url)
-                qs = urllib.parse.parse_qs(parsed.query)
-                self.auth_code = qs.get("code", [None])[0]
+            self._capture_auth_code_from_url(response.url, source="响应")
+
+        def on_request_failed(request):
+            if self.auth_code:
+                return
+            self._capture_auth_code_from_url(request.url, source="失败请求")
 
         self.page.on("request", on_request)
         self.page.on("response", on_response)
+        self.page.on("requestfailed", on_request_failed)
 
     def _inject_auth_cookies(self):
         cookies = []
@@ -1254,17 +1308,39 @@ class SessionCodexAuthFlow:
         except Exception:
             pass
 
-        try:
-            consent_btn = self.page.locator(
-                'button:has-text("继续"), button:has-text("Continue"), button:has-text("Allow")'
-            ).first
-            if consent_btn.is_visible(timeout=1000):
+        for click_index in range(1, 4):
+            try:
+                consent_btn = self.page.locator(
+                    'button:has-text("继续"), button:has-text("Continue"), button:has-text("Allow"), '
+                    '[role="button"]:has-text("Continue"), [role="button"]:has-text("Allow")'
+                ).first
+                if not consent_btn.is_visible(timeout=1000):
+                    break
+
+                disabled = False
+                try:
+                    disabled = consent_btn.is_disabled() or consent_btn.get_attribute("aria-disabled") == "true"
+                except Exception:
+                    disabled = False
+                if disabled:
+                    break
+
+                try:
+                    consent_btn.scroll_into_view_if_needed(timeout=1000)
+                except Exception:
+                    pass
+
                 consent_btn.click()
-                logger.info("[Codex] 主号点击继续/授权")
-                time.sleep(3)
+                logger.info("[Codex] 主号点击继续/授权 (%d/3)", click_index)
                 acted = True
-        except Exception:
-            pass
+
+                try:
+                    self.page.wait_for_load_state("domcontentloaded", timeout=3000)
+                except Exception:
+                    pass
+                time.sleep(2)
+            except Exception:
+                break
 
         return acted
 
@@ -1290,22 +1366,212 @@ class SessionCodexAuthFlow:
         time.sleep(5)
         return True
 
-    def _switch_password_to_otp(self):
-        otp_entry = self._visible_locator(self.OTP_OPTION_SELECTORS, timeout_ms=1500)
-        if not otp_entry:
+    def _switch_to_one_time_code(self, timeout_ms=2500):
+        if not self.page:
             return False
 
+        deadline = time.time() + timeout_ms / 1000
+        while time.time() < deadline:
+            frames = [self.page.main_frame]
+            frames.extend(frame for frame in self.page.frames if frame != self.page.main_frame)
+            for frame in frames:
+                for selector in self.ONE_TIME_CODE_SELECTORS:
+                    try:
+                        locator = frame.locator(selector).first
+                        if not locator.is_visible(timeout=250):
+                            continue
+                        locator.click()
+                        logger.info("[Codex] 检测到密码页，已切换到一次性验证码登录")
+                        time.sleep(3)
+                        return True
+                    except Exception:
+                        pass
+            time.sleep(0.2)
+
         try:
-            otp_entry.click()
+            clicked = self.page.evaluate(
+                """() => {
+                const labels = [
+                    'log in with a one-time code',
+                    'one-time code',
+                    'email login',
+                    '一次性验证码',
+                ];
+                const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                const nodes = Array.from(document.querySelectorAll('button, a, [role="button"], div'));
+                for (const node of nodes) {
+                    const text = norm(node.textContent);
+                    if (!text) continue;
+                    if (!labels.some(label => text.includes(label))) continue;
+                    const rect = node.getBoundingClientRect();
+                    if (!rect || rect.width === 0 || rect.height === 0) continue;
+                    node.click();
+                    return true;
+                }
+                return false;
+            }"""
+            )
+            if clicked:
+                logger.info("[Codex] 检测到密码页，已通过页面兜底切换到一次性验证码登录")
+                time.sleep(3)
+                return True
         except Exception:
+            pass
+        return False
+
+    def _ensure_mail_client(self):
+        if self.mail_client:
+            return self.mail_client
+        if self._mail_client_failed:
+            return None
+
+        try:
+            from autoteam.cloudmail import CloudMailClient
+
+            self.mail_client = CloudMailClient()
+            self.mail_client.login()
+            self._own_mail_client = True
+            logger.info("[Codex] 已连接 CloudMail，用于自动读取验证码")
+            return self.mail_client
+        except Exception as exc:
+            self._mail_client_failed = True
+            logger.warning("[Codex] 初始化 CloudMail 失败，无法自动读取验证码: %s", exc)
+            return None
+
+    def _snapshot_latest_email_id(self):
+        if not self.email:
+            return 0
+
+        mail_client = self._ensure_mail_client()
+        if not mail_client:
+            return self._email_id_before_login
+
+        try:
+            emails = mail_client.search_emails_by_recipient(self.email, size=1)
+            if emails:
+                self._email_id_before_login = max(
+                    int(emails[0].get("emailId", 0) or 0),
+                    self._email_id_before_login,
+                )
+        except Exception as exc:
+            logger.warning("[Codex] 获取验证码邮件基线失败: %s", exc)
+        return self._email_id_before_login
+
+    def _auto_fill_email_code(self, timeout_seconds=120):
+        if not self.page:
+            return False
+
+        code_input = self._visible_locator(self.CODE_SELECTORS, timeout_ms=1500)
+        if not code_input:
+            return False
+
+        mail_client = self._ensure_mail_client()
+        if not mail_client:
+            logger.warning("[Codex] 需要验证码但无 mail_client，无法自动获取")
+            return False
+
+        logger.info(
+            "[Codex] 需要邮箱验证码，等待 emailId > %d 的新邮件...",
+            self._email_id_before_login,
+        )
+
+        otp = None
+        otp_email_id = 0
+        page_left_code = False
+        deadline = time.time() + timeout_seconds
+
+        while time.time() < deadline:
+            if not _is_otp_input_visible(self.page, timeout=300):
+                page_left_code = True
+                logger.info("[Codex] 验证码页已退出，继续后续授权流程")
+                break
+
             try:
-                otp_entry.click(force=True)
-            except Exception:
+                emails = mail_client.search_emails_by_recipient(self.email, size=5)
+            except Exception as exc:
+                logger.warning("[Codex] 拉取验证码邮件失败: %s", exc)
+                time.sleep(3)
+                continue
+
+            for em in emails:
+                email_id = int(em.get("emailId", 0) or 0)
+                if email_id <= self._email_id_before_login or email_id in self._used_email_ids:
+                    continue
+
+                sender = (em.get("sendEmail") or "").lower()
+                if sender and "openai" not in sender and "chatgpt" not in sender:
+                    continue
+
+                subject = (em.get("subject") or "").lower()
+                if "invited" in subject or "invitation" in subject:
+                    continue
+
+                text = em.get("text", "") or em.get("content", "")
+                match = re.search(r"\b(\d{6})\b", text)
+                if not match:
+                    continue
+
+                otp = match.group(1)
+                otp_email_id = email_id
+                break
+
+            if otp:
+                break
+            time.sleep(3)
+
+        if page_left_code:
+            return True
+
+        if not otp:
+            logger.warning("[Codex] 未获取到验证码")
+            return False
+
+        for submit_attempt in range(1, 3):
+            code_input = self._visible_locator(self.CODE_SELECTORS, timeout_ms=2000)
+            if not code_input:
+                self._used_email_ids.add(otp_email_id)
+                return True
+
+            code_input.fill(otp)
+            time.sleep(0.5)
+            _click_primary_auth_button(self.page, code_input, ["Continue", "继续", "Verify", "Log in"])
+            logger.info("[Codex] 已输入验证码: %s", otp)
+
+            submit_status, submit_detail = _wait_for_otp_submit_result(self.page, timeout=12)
+            if submit_status == "accepted":
+                self._used_email_ids.add(otp_email_id)
+                return True
+
+            if submit_status == "invalid":
+                self._used_email_ids.add(otp_email_id)
+                detail_suffix = f"，命中提示: {submit_detail}" if submit_detail else ""
+                logger.warning(
+                    "[Codex] 验证码邮件 %s（code=%s）被页面判定无效%s，标记并跳过该邮件",
+                    otp_email_id,
+                    otp,
+                    detail_suffix,
+                )
                 return False
 
-        logger.info("[Codex] 主号流程检测到密码页，自动切换到一次性验证码登录")
-        time.sleep(3)
-        return True
+            if submit_attempt < 2:
+                logger.warning(
+                    "[Codex] 验证码邮件 %s（code=%s）提交后未确认成功，准备重试第 %d/2 次",
+                    otp_email_id,
+                    otp,
+                    submit_attempt + 1,
+                )
+                time.sleep(2)
+                continue
+
+            self._used_email_ids.add(otp_email_id)
+            logger.warning(
+                "[Codex] 验证码邮件 %s（code=%s）提交后仍未确认成功，标记并跳过该邮件",
+                otp_email_id,
+                otp,
+            )
+            return False
+
+        return False
 
     def _advance(self, attempts=12):
         for _ in range(attempts):
@@ -1313,9 +1579,11 @@ class SessionCodexAuthFlow:
             if step == "completed":
                 return {"step": "completed", "detail": detail}
             if step == "code_required":
+                if self._auto_fill_email_code():
+                    continue
                 return {"step": "code_required", "detail": detail}
-            if step == "password_required":
-                if self._switch_password_to_otp():
+            if step == "password_required" and not self.password:
+                if self._switch_to_one_time_code():
                     continue
                 return {
                     "step": "unsupported_password",
@@ -1326,6 +1594,10 @@ class SessionCodexAuthFlow:
                 if self._auto_fill_email():
                     continue
                 return {"step": "email_required", "detail": detail}
+
+            if step == "password_required" and self.password:
+                if self._auto_fill_password():
+                    continue
 
             if self._click_workspace_or_consent():
                 continue
@@ -1348,8 +1620,11 @@ class SessionCodexAuthFlow:
         self.page = self.chatgpt.context.new_page()
         self._attach_callback_listeners()
         self._inject_auth_cookies()
+        self._snapshot_latest_email_id()
         self.page.goto(self.auth_url, wait_until="domcontentloaded", timeout=60000)
         time.sleep(3)
+        if not self.password:
+            self._switch_to_one_time_code(timeout_ms=5000)
         return self._advance()
 
     def submit_password(self, password):
@@ -1396,8 +1671,14 @@ class SessionCodexAuthFlow:
     def stop(self):
         if self.chatgpt:
             self.chatgpt.stop()
+        if self._own_mail_client and self.mail_client:
+            try:
+                self.mail_client.session.close()
+            except Exception:
+                pass
         self.chatgpt = None
         self.page = None
+        self.mail_client = None
 
 
 class MainCodexSyncFlow(SessionCodexAuthFlow):
@@ -1407,8 +1688,8 @@ class MainCodexSyncFlow(SessionCodexAuthFlow):
             session_token=get_admin_session_token(),
             account_id=get_chatgpt_account_id(),
             workspace_name=get_chatgpt_workspace_name(),
-            password="",
-            password_callback=None,
+            password=get_admin_password(),
+            password_callback=lambda password: update_admin_state(password=password),
             auth_file_callback=save_main_auth_file,
         )
 

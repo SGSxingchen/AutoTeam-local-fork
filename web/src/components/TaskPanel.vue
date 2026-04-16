@@ -1,38 +1,105 @@
 <template>
-  <div class="mt-6 bg-gray-900 border border-gray-800 rounded-xl p-4">
-    <h2 class="text-lg font-semibold text-white mb-4">{{ panelTitle }}</h2>
-    <div v-if="showAdminHint" class="mb-4 px-4 py-3 rounded-lg text-sm border bg-amber-500/10 text-amber-300 border-amber-500/20">
+  <div class="app-card p-5 md:p-6">
+    <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div>
+        <h2 class="text-2xl font-bold tracking-tight text-white">{{ panelTitle }}</h2>
+        <p class="mt-2 text-sm leading-6 text-slate-400">
+          {{ panelCopy }}
+        </p>
+      </div>
+
+      <span
+        :class="[
+          'status-pill shrink-0',
+          props.runningTask
+            ? 'border-amber-400/20 bg-amber-500/10 text-amber-200'
+            : 'border-emerald-400/20 bg-emerald-500/10 text-emerald-200',
+        ]"
+      >
+        <span class="h-2 w-2 rounded-full bg-current"></span>
+        {{ props.runningTask ? '后台任务进行中' : '当前空闲' }}
+      </span>
+    </div>
+
+    <div
+      v-if="showAdminHint"
+      class="mt-5 rounded-2xl border border-amber-400/20 bg-amber-500/10 px-4 py-4 text-sm text-amber-100"
+    >
       {{ adminHint }}
     </div>
-    <div class="flex flex-wrap gap-3">
-      <button v-for="action in visibleActions" :key="action.key"
+
+    <div class="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <button
+        v-for="action in visibleActions"
+        :key="action.key"
         @click="execute(action)"
         :disabled="isDisabled(action)"
-        class="px-4 py-2 rounded-lg text-sm font-medium transition border"
-        :class="isDisabled(action)
-          ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
-          : `${action.style} hover:opacity-80`">
-        {{ action.label }}
+        :class="[
+          'rounded-[24px] border p-4 text-left transition',
+          isDisabled(action)
+            ? 'cursor-not-allowed border-white/10 bg-slate-900/50 text-slate-500'
+            : 'border-white/10 bg-white/5 text-white hover:border-cyan-400/20 hover:bg-cyan-400/10',
+        ]"
+      >
+        <div class="flex items-start justify-between gap-3">
+          <div class="text-base font-semibold">{{ action.label }}</div>
+          <span
+            :class="[
+              'rounded-full px-2.5 py-1 text-[11px] font-medium',
+              action.sync
+                ? 'bg-emerald-500/15 text-emerald-200'
+                : action.needParam
+                  ? 'bg-cyan-500/15 text-cyan-200'
+                  : 'bg-violet-500/15 text-violet-200',
+            ]"
+          >
+            {{ action.sync ? '即时执行' : action.needParam ? '需要参数' : '后台任务' }}
+          </span>
+        </div>
+        <p class="mt-3 text-sm leading-6 text-slate-400">
+          {{ action.copy }}
+        </p>
       </button>
     </div>
 
-    <!-- 参数输入 -->
-    <div v-if="showParams" class="mt-4 flex items-center gap-3">
-      <label class="text-sm text-gray-400">{{ paramLabel }}:</label>
-      <input v-model.number="paramValue" type="number" min="1" max="20"
-        class="w-20 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500" />
-      <button @click="confirmAction" :disabled="pendingAction && isDisabled(pendingAction)"
-        class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition">
-        确认执行
-      </button>
-      <button @click="showParams = false"
-        class="px-3 py-1.5 text-gray-400 hover:text-white text-sm transition">
-        取消
-      </button>
+    <div
+      v-if="showParams && pendingAction"
+      class="mt-5 rounded-[24px] border border-cyan-400/20 bg-cyan-500/10 p-4"
+    >
+      <div class="text-sm font-semibold text-cyan-100">
+        {{ pendingAction.label }} 需要输入参数
+      </div>
+      <p class="mt-2 text-sm leading-6 text-cyan-100/80">
+        {{ paramHelp }}
+      </p>
+      <div class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+        <input
+          v-model.number="paramValue"
+          type="number"
+          min="1"
+          max="20"
+          class="app-input w-full sm:max-w-[140px]"
+        />
+        <div class="flex flex-wrap gap-3">
+          <button
+            @click="confirmAction"
+            :disabled="pendingAction && isDisabled(pendingAction)"
+            class="app-button-primary"
+          >
+            确认执行
+          </button>
+          <button @click="cancelParamInput" class="app-button-secondary">
+            取消
+          </button>
+        </div>
+      </div>
     </div>
 
-    <!-- 结果提示 -->
-    <div v-if="message" class="mt-4 px-4 py-3 rounded-lg text-sm" :class="messageClass">
+    <div
+      v-if="message"
+      class="mt-5 rounded-2xl border px-4 py-3 text-sm"
+      :class="messageClass"
+    >
       {{ message }}
     </div>
   </div>
@@ -43,7 +110,10 @@ import { computed, ref } from 'vue'
 import { api } from '../api.js'
 
 const props = defineProps({
-  runningTask: Object,
+  runningTask: {
+    type: Object,
+    default: null,
+  },
   adminStatus: {
     type: Object,
     default: null,
@@ -53,42 +123,123 @@ const props = defineProps({
     default: 'all',
   },
 })
+
 const emit = defineEmits(['task-started', 'refresh'])
 
 const actions = [
-  { key: 'rotate', group: 'pool', label: '智能轮转', method: 'startRotate', needParam: true, paramName: 'target', style: 'bg-blue-600 text-white border-blue-500' },
-  { key: 'check', group: 'pool', label: '检查额度', method: 'startCheck', needParam: false, style: 'bg-emerald-600 text-white border-emerald-500' },
-  { key: 'fill', group: 'pool', label: '补满成员', method: 'startFill', needParam: true, paramName: 'target', style: 'bg-violet-600 text-white border-violet-500' },
-  { key: 'add', group: 'pool', label: '添加账号', method: 'startAdd', needParam: false, style: 'bg-amber-600 text-white border-amber-500' },
-  { key: 'cleanup', group: 'pool', label: '清理成员', method: 'startCleanup', needParam: false, style: 'bg-rose-600 text-white border-rose-500' },
-  { key: 'sync', group: 'sync', label: '同步 CPA', method: 'postSync', needParam: false, sync: true, allowWithoutAdmin: true, style: 'bg-cyan-600 text-white border-cyan-500' },
-  { key: 'pull-cpa', group: 'sync', label: '拉取 CPA', method: 'postSyncFromCpa', needParam: false, sync: true, allowWithoutAdmin: true, style: 'bg-emerald-600 text-white border-emerald-500' },
-  { key: 'sync-accounts', group: 'sync', label: '同步账号', method: 'postSyncAccounts', needParam: false, sync: true, allowWithoutAdmin: true, style: 'bg-sky-600 text-white border-sky-500' },
+  {
+    key: 'rotate',
+    group: 'pool',
+    label: '智能轮转',
+    copy: '按目标成员数自动调度账号，把额度紧张的成员从当前流程里换下来。',
+    method: 'startRotate',
+    needParam: true,
+    paramName: 'target',
+  },
+  {
+    key: 'check',
+    group: 'pool',
+    label: '检查额度',
+    copy: '立即刷新账号额度缓存，适合在大动作前先看一遍真实状态。',
+    method: 'startCheck',
+    needParam: false,
+  },
+  {
+    key: 'fill',
+    group: 'pool',
+    label: '补满成员',
+    copy: '把 Team 成员补到目标数量，适合轮转之后快速回到稳定规模。',
+    method: 'startFill',
+    needParam: true,
+    paramName: 'target',
+  },
+  {
+    key: 'add',
+    group: 'pool',
+    label: '添加账号',
+    copy: '发起新增账号流程，把新账号逐步拉进本地池子和 Team 里。',
+    method: 'startAdd',
+    needParam: false,
+  },
+  {
+    key: 'cleanup',
+    group: 'pool',
+    label: '清理成员',
+    copy: '清掉多余或不该留在 Team 里的成员，适合混乱后做一次收口。',
+    method: 'startCleanup',
+    needParam: false,
+  },
+  {
+    key: 'sync',
+    group: 'sync',
+    label: '同步 CPA',
+    copy: '把本地认证状态推到 CPA 侧，让外部依赖拿到最新文件。',
+    method: 'postSync',
+    needParam: false,
+    sync: true,
+    allowWithoutAdmin: true,
+  },
+  {
+    key: 'pull-cpa',
+    group: 'sync',
+    label: '拉取 CPA',
+    copy: '从 CPA 反向拉认证文件到本地，适合对账和补齐缺失状态。',
+    method: 'postSyncFromCpa',
+    needParam: false,
+    sync: true,
+    allowWithoutAdmin: true,
+  },
+  {
+    key: 'sync-accounts',
+    group: 'sync',
+    label: '同步账号',
+    copy: '对齐本地账号池记录，刷新活跃、待命和额度耗尽状态。',
+    method: 'postSyncAccounts',
+    needParam: false,
+    sync: true,
+    allowWithoutAdmin: true,
+  },
 ]
 
 const showParams = ref(false)
-const paramLabel = ref('')
 const paramValue = ref(5)
 const pendingAction = ref(null)
 const message = ref('')
 const messageClass = ref('')
+
 const adminReady = computed(() => !!props.adminStatus?.configured)
 const visibleActions = computed(() => {
   if (props.mode === 'all') return actions
   return actions.filter(action => action.group === props.mode)
 })
 const panelTitle = computed(() => {
-  if (props.mode === 'pool') return '账号池操作'
-  if (props.mode === 'sync') return '同步操作'
-  return '操作'
+  if (props.mode === 'pool') return '账号池动作区'
+  if (props.mode === 'sync') return '同步动作区'
+  return '操作中心'
+})
+const panelCopy = computed(() => {
+  if (props.mode === 'pool') {
+    return '轮转、补满、检查和清理都会直接影响账号池状态。建议先确认管理员登录已完成。'
+  }
+  if (props.mode === 'sync') {
+    return '这里处理本地、CPA 和账号记录之间的同步关系，偏对账和状态修复。'
+  }
+  return '所有动作都会在这里集中发起。系统忙碌时会自动禁用，避免任务撞车。'
 })
 const adminHint = computed(() => {
   if (props.mode === 'sync') {
-    return '同步类操作可独立使用：同步账号、同步 CPA、拉取 CPA。'
+    return '同步类动作可以独立执行：同步账号、同步 CPA、拉取 CPA 不依赖管理员登录。'
   }
-  return '请先在「设置」页完成管理员登录后，轮转/补满/清理等账号池操作才会开放。'
+  return '管理员未登录时，轮转、补满、添加和清理这类会影响 Team 结构的动作会被锁住。'
 })
 const showAdminHint = computed(() => !adminReady.value && (props.mode === 'pool' || props.mode === 'sync'))
+const paramHelp = computed(() => {
+  if (!pendingAction.value) return ''
+  if (pendingAction.value.paramName === 'target') {
+    return '输入希望补到或轮转到的目标成员数。系统会按这个值发起后台任务。'
+  }
+  return '输入这个动作需要的参数值，再确认执行。'
+})
 
 function isDisabled(action) {
   if (props.runningTask) return true
@@ -101,7 +252,6 @@ async function execute(action) {
   message.value = ''
   if (action.needParam) {
     pendingAction.value = action
-    paramLabel.value = action.paramName === 'target' ? '目标成员数' : '最大席位'
     paramValue.value = 5
     showParams.value = true
     return
@@ -117,23 +267,32 @@ async function confirmAction() {
   }
 }
 
+function cancelParamInput() {
+  pendingAction.value = null
+  showParams.value = false
+}
+
 async function doExecute(action, param) {
   try {
     if (action.sync) {
       const result = await api[action.method]()
       message.value = result.message || '操作完成'
-      messageClass.value = 'bg-green-500/10 text-green-400 border border-green-500/20'
+      messageClass.value = 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100'
       emit('refresh')
     } else {
       const result = await api[action.method](param)
-      message.value = `任务已提交: ${result.task_id}`
-      messageClass.value = 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+      message.value = `任务已提交：${result.task_id}`
+      messageClass.value = 'border-cyan-400/20 bg-cyan-500/10 text-cyan-100'
       emit('task-started')
     }
   } catch (e) {
     message.value = e.message
-    messageClass.value = 'bg-red-500/10 text-red-400 border border-red-500/20'
+    messageClass.value = 'border-rose-400/20 bg-rose-500/10 text-rose-100'
   }
-  setTimeout(() => { message.value = '' }, 8000)
+
+  window.clearTimeout(doExecute._timer)
+  doExecute._timer = window.setTimeout(() => {
+    message.value = ''
+  }, 8000)
 }
 </script>

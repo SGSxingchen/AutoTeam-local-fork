@@ -310,6 +310,7 @@ def register_with_invite(page, invite_link, email, mail_client, password=None):
         find_and_click(
             page,
             [
+                'button:has-text("Finish")',
                 'button:has-text("完成帐户创建")',
                 'button:has-text("Complete")',
                 'button:has-text("Continue")',

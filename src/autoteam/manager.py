@@ -1002,7 +1002,10 @@ def _complete_direct_about_you(page):
             return True
 
         try:
-            name_input = page.locator('input[name="name"]').first
+            name_input = page.locator(
+                'input[name="name"], input[name="full_name"], input[name="fullName"], '
+                'input[autocomplete="name"], input[placeholder*="name" i], input[placeholder*="名" i]'
+            ).first
             if name_input.is_visible(timeout=2000):
                 try:
                     if name_input.is_editable(timeout=500):
@@ -1057,6 +1060,7 @@ def _complete_direct_about_you(page):
 
         submitted = False
         for btn_selector in (
+            'button:has-text("Finish")',
             'button:has-text("完成帐户创建")',
             'button:has-text("Create account")',
             'button:has-text("Continue")',
@@ -2030,6 +2034,123 @@ def cmd_admin_session(email=None):
         chatgpt.stop()
 
 
+def cmd_debug_admin_session(email=None):
+    """本地调试 session_token 能否建立 ChatGPT Team 登录态，不写入 state.json。"""
+    email = (email or "").strip()
+    if not email:
+        email = input("管理员邮箱: ").strip()
+
+    if not email:
+        logger.error("[管理员调试] 邮箱不能为空")
+        return None
+
+    session_token = getpass.getpass("session_token（留空取消）: ").strip()
+    if not session_token:
+        logger.warning("[管理员调试] 已取消")
+        return None
+
+    chatgpt = ChatGPTTeamAPI()
+    try:
+        logger.info("[管理员调试] 开始验证 session_token: %s", email)
+        chatgpt.login_email = email
+        chatgpt.session_token = session_token
+        chatgpt.workspace_name = ""
+
+        chatgpt._launch_browser()
+        chatgpt.page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000)
+        time.sleep(5)
+        chatgpt._wait_for_cloudflare()
+
+        chatgpt._inject_session(session_token)
+        chatgpt.page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=60000)
+        time.sleep(5)
+        chatgpt._wait_for_cloudflare()
+
+        chooser_resolved = chatgpt._resolve_account_chooser(email)
+        workspace_selection_detected = chatgpt._is_workspace_selection_page()
+        workspace_auto_opened = False
+        if workspace_selection_detected:
+            workspace_auto_opened = chatgpt._auto_open_preferred_workspace()
+
+        token_source = chatgpt._fetch_access_token_with_retry(allow_bearer_file=False, attempts=4, delay_seconds=3)
+        account_id_from_token = chatgpt._extract_account_id_from_access_token() if token_source else ""
+
+        cookie_account_id = ""
+        try:
+            for cookie in chatgpt.context.cookies():
+                if cookie.get("name") == "_account" and chatgpt._UUID_RE.match(cookie.get("value", "")):
+                    cookie_account_id = cookie["value"]
+                    break
+        except Exception:
+            pass
+
+        guessed_account_id, guessed_workspace_name = chatgpt._guess_account_info(allow_dom_fallback=False)
+        final_account_id = guessed_account_id or account_id_from_token or cookie_account_id
+
+        settings_workspace_name = ""
+        settings_fetch_ok = False
+        settings_fetch_error = ""
+        if final_account_id and chatgpt.access_token:
+            try:
+                settings_result = chatgpt._evaluate_with_nav_retry(
+                    """async ([accountId, accessToken]) => {
+                    try {
+                        const headers = { "chatgpt-account-id": accountId };
+                        if (accessToken) headers["authorization"] = `Bearer ${accessToken}`;
+                        const resp = await fetch("/backend-api/accounts/" + accountId + "/settings", { headers });
+                        return await resp.json();
+                    } catch (e) {
+                        return { __error: String(e && e.message || e) };
+                    }
+                }""",
+                    [final_account_id, chatgpt.access_token],
+                    attempts=3,
+                    delay_seconds=1,
+                )
+                settings_fetch_ok = "__error" not in (settings_result or {})
+                settings_fetch_error = (settings_result or {}).get("__error", "")
+                settings_workspace_name = (settings_result or {}).get("workspace_name", "") or ""
+            except Exception as exc:
+                settings_fetch_error = str(exc)
+
+        dom_workspace_name = ""
+        dom_detect_error = ""
+        try:
+            chatgpt.page.goto("https://chatgpt.com/admin", wait_until="domcontentloaded", timeout=30000)
+            time.sleep(5)
+            dom_workspace_name = chatgpt._detect_workspace_name_from_dom()
+        except Exception as exc:
+            dom_detect_error = str(exc)
+
+        result = {
+            "email": email,
+            "session_len": len(session_token),
+            "current_url": chatgpt.page.url if chatgpt.page else "",
+            "chooser_resolved": chooser_resolved,
+            "workspace_selection_detected": workspace_selection_detected,
+            "workspace_auto_opened": workspace_auto_opened,
+            "workspace_name_from_picker": chatgpt.workspace_name or "",
+            "token_source": token_source or "",
+            "access_token_present": bool(chatgpt.access_token),
+            "account_id_from_token": account_id_from_token,
+            "account_id_from_cookie": cookie_account_id,
+            "account_id_guessed": guessed_account_id or "",
+            "final_account_id": final_account_id,
+            "workspace_name_guessed": guessed_workspace_name or "",
+            "workspace_name_from_settings": settings_workspace_name,
+            "settings_fetch_ok": settings_fetch_ok,
+            "settings_fetch_error": settings_fetch_error,
+            "workspace_name_from_dom": dom_workspace_name,
+            "dom_detect_error": dom_detect_error,
+            "body_excerpt": chatgpt._body_excerpt(200),
+        }
+
+        logger.info("[管理员调试] 诊断结果如下：\n%s", json.dumps(result, indent=2, ensure_ascii=False))
+        return result
+    finally:
+        chatgpt.stop()
+
+
 def cmd_main_codex_sync():
     """交互式同步主号 Codex 认证到 CPA。"""
     state = get_admin_state_summary()
@@ -2303,6 +2424,8 @@ def main():
     admin_login_p.add_argument("--email", help="管理员邮箱；不传则运行时交互输入")
     admin_session_p = sub.add_parser("admin-session", help="手动输入 session_token 导入管理员登录态")
     admin_session_p.add_argument("--email", help="管理员邮箱；不传则运行时交互输入")
+    debug_admin_session_p = sub.add_parser("debug-admin-session", help="本地调试 session_token 是否能建立 ChatGPT Team 登录态")
+    debug_admin_session_p.add_argument("--email", help="管理员邮箱；不传则运行时交互输入")
     sub.add_parser("main-codex-sync", help="交互式同步主号 Codex 到 CPA")
 
     fill_p = sub.add_parser("fill", help="补满 Team 成员到指定数量")
@@ -2351,6 +2474,8 @@ def main():
         cmd_admin_login(args.email)
     elif args.command == "admin-session":
         cmd_admin_session(args.email)
+    elif args.command == "debug-admin-session":
+        cmd_debug_admin_session(args.email)
     elif args.command == "main-codex-sync":
         cmd_main_codex_sync()
     elif args.command == "fill":

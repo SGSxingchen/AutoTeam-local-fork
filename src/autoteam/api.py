@@ -777,7 +777,7 @@ def post_main_codex_start():
         if step == "completed":
             _main_codex_flow = flow
             return _finish_main_codex_sync()
-        if step in ("password_required", "code_required"):
+        if step in ("email_required", "password_required", "code_required"):
             return _set_pending_main_codex_sync(flow, step)
         _pw_executor.run(flow.stop)
         _playwright_lock.release()
@@ -802,7 +802,7 @@ def post_main_codex_password(params: AdminPasswordParams):
         step = result["step"]
         if step == "completed":
             return _finish_main_codex_sync()
-        if step in ("password_required", "code_required"):
+        if step in ("email_required", "password_required", "code_required"):
             _main_codex_step = step
             return {"status": step, "codex": _main_codex_status()}
         raise HTTPException(status_code=400, detail=result.get("detail") or "主号 Codex 密码登录失败")
@@ -832,7 +832,7 @@ def post_main_codex_code(params: AdminCodeParams):
         step = result["step"]
         if step == "completed":
             return _finish_main_codex_sync()
-        if step in ("password_required", "code_required"):
+        if step in ("email_required", "password_required", "code_required"):
             _main_codex_step = step
             return {"status": step, "codex": _main_codex_status()}
         raise HTTPException(status_code=400, detail=result.get("detail") or "主号 Codex 验证码登录失败")

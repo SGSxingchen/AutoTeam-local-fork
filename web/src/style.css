@@ -1,7 +1,180 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+:root {
+  color-scheme: dark;
+  --bg: 5 10 20;
+  --surface: 11 18 32;
+  --surface-strong: 16 24 43;
+  --line: 148 163 184;
+  --text: 226 232 240;
+  --muted: 148 163 184;
+  --accent: 34 211 238;
+  --accent-strong: 14 165 233;
+  --success: 74 222 128;
+  --warning: 251 191 36;
+  --danger: 248 113 113;
+}
+
+@layer base {
+  * {
+    @apply border-slate-800;
+  }
+
+  html {
+    @apply scroll-smooth;
+  }
+
+  body {
+    @apply min-h-screen text-slate-100 antialiased;
+    font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
+    background:
+      radial-gradient(circle at top left, rgba(34, 211, 238, 0.16), transparent 28%),
+      radial-gradient(circle at top right, rgba(248, 113, 113, 0.12), transparent 22%),
+      radial-gradient(circle at bottom, rgba(14, 165, 233, 0.14), transparent 30%),
+      linear-gradient(145deg, rgb(var(--bg)) 0%, rgb(8 15 30) 54%, rgb(3 7 18) 100%);
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+    background-size: 36px 36px;
+    mask-image: radial-gradient(circle at center, black 28%, transparent 80%);
+    opacity: 0.4;
+  }
+
+  #app {
+    @apply min-h-screen;
+  }
+
+  ::selection {
+    background: rgba(34, 211, 238, 0.28);
+    color: rgb(var(--text));
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+
+  code,
+  pre,
+  .font-mono {
+    font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+  }
+}
+
+@layer components {
+  .app-shell {
+    @apply relative min-h-screen px-4 py-4 md:px-6 md:py-6;
+  }
+
+  .app-frame {
+    @apply relative mx-auto flex min-h-[calc(100vh-2rem)] max-w-[1680px] gap-4 md:gap-6;
+  }
+
+  .app-card {
+    @apply rounded-[28px] border border-white/10 bg-slate-950/65 shadow-[0_30px_80px_-42px_rgba(15,23,42,0.95)] backdrop-blur-xl;
+  }
+
+  .app-card-soft {
+    @apply rounded-[24px] border border-white/10 bg-slate-950/55 backdrop-blur-lg;
+  }
+
+  .app-panel {
+    @apply rounded-[22px] border border-white/10 bg-slate-900/55;
+  }
+
+  .app-chip {
+    @apply inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-200;
+  }
+
+  .app-input {
+    @apply w-full rounded-2xl border border-white/10 bg-slate-950/65 px-4 py-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-400/60 focus:ring-4 focus:ring-cyan-500/10;
+  }
+
+  .app-textarea {
+    @apply app-input min-h-[132px] resize-y py-3;
+  }
+
+  .app-button {
+    @apply inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-medium transition duration-200 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .app-button-primary {
+    @apply app-button bg-cyan-400 text-slate-950 shadow-[0_12px_30px_-16px_rgba(34,211,238,0.8)] hover:bg-cyan-300;
+  }
+
+  .app-button-secondary {
+    @apply app-button border border-white/10 bg-white/5 text-slate-100 hover:bg-white/10;
+  }
+
+  .app-button-danger {
+    @apply app-button border border-rose-400/20 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20;
+  }
+
+  .app-button-ghost {
+    @apply app-button bg-transparent text-slate-300 hover:bg-white/5 hover:text-white;
+  }
+
+  .page-title {
+    @apply text-2xl font-bold tracking-tight text-white md:text-[2rem];
+  }
+
+  .page-copy {
+    @apply text-sm leading-6 text-slate-400 md:text-[15px];
+  }
+
+  .metric-value {
+    @apply text-3xl font-bold tracking-tight text-white md:text-[2.2rem];
+  }
+
+  .metric-label {
+    @apply text-xs font-medium uppercase tracking-[0.24em] text-slate-500;
+  }
+
+  .status-pill {
+    @apply inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium;
+  }
+
+  .page-fade-enter-active,
+  .page-fade-leave-active {
+    transition: opacity 0.22s ease, transform 0.22s ease;
+  }
+
+  .page-fade-enter-from,
+  .page-fade-leave-to {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.45);
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+  background-color: rgba(100, 116, 139, 0.7);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(148, 163, 184, 0.85);
 }
