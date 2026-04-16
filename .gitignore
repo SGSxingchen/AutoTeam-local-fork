@@ -13,3 +13,10 @@ bearer_token
 test.py
 .env
 web/node_modules/
+.claude/
+CLAUDE.md
+runlogs/
+runlogs.zip
+.ruff_cache/
+.pytest_cache/
+*.log

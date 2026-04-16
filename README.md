@@ -1,146 +1,85 @@
-<div align="center">
+# AutoTeam Local Fork
 
-# AutoTeam
+This repository is a heavily customized fork of
+[`cnitlrt/AutoTeam`](https://github.com/cnitlrt/AutoTeam).
 
-**面向 ChatGPT Team 的账号轮转与认证同步工具**
+It started from the upstream project, but the local workflow, UI, and automation
+behavior have diverged enough that this repo is now maintained as an
+independent fork.
 
-自动注册账号、获取 Codex 认证、按额度轮转席位，并与 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 双向同步认证文件。
+## Fork Notes
 
-[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-[![Playwright](https://img.shields.io/badge/Playwright-Chromium-2EAD33?style=for-the-badge&logo=playwright&logoColor=white)](https://playwright.dev)
-[![uv](https://img.shields.io/badge/uv-Package_Manager-DE5FE9?style=for-the-badge)](https://docs.astral.sh/uv/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-API_&_Web-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Vue](https://img.shields.io/badge/Vue_3-Frontend-4FC08D?style=for-the-badge&logo=vue.js&logoColor=white)](https://vuejs.org)
-[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
+- The dashboard and shell UX were reworked for daily operator use.
+- Team member loading now prefers cache and manual refresh instead of fetching on
+  every page visit.
+- "Sync accounts" and quota refresh were split so account-state sync no longer
+  forces an immediate quota refresh.
+- The console restores a local snapshot on reload so the UI appears quickly
+  before background refresh finishes.
+- Browser automation can run headless with `PLAYWRIGHT_HEADLESS=1`, which is
+  especially useful on Windows.
 
-</div>
+## What This Repo Is For
 
----
+AutoTeam is used to manage a pool of ChatGPT Team accounts, related auth files,
+and supporting operator workflows from a web console.
 
-> **免责声明**：本项目仅供学习和研究用途。使用本工具可能违反 OpenAI 的服务条款，包括但不限于自动化操作、多账号管理等。使用者需自行承担所有风险，包括账号封禁、IP 限制等后果。作者不对任何因使用本工具造成的损失承担责任。
+Main areas in this fork:
 
-## 特性
+- Account pool and status overview
+- Team member inspection and manual refresh
+- Account sync and CPA sync operations
+- OAuth / Codex auth handling
+- Task history and operator logs
 
-| | 功能 | 描述 |
-|---|---|---|
-| 📧 | **自动注册** | CloudMail 临时邮箱 + Playwright 自动注册 |
-| 🔐 | **Codex OAuth** | 自动登录 Codex，无密码时可走邮箱验证码 |
-| 🔑 | **手动 OAuth 导入** | 支持 localhost 自动回调，也支持手动粘贴回调 URL |
-| 🔄 | **智能轮转** | 额度不足自动移出，旧号恢复后优先复用 |
-| ☁️ | **CPA 双向同步** | 本地 active 上传到 CPA，也可从 CPA 反向导入 |
-| 🖥️ | **Web 面板** | 仪表盘、同步中心、OAuth 登录、任务历史、日志、设置 |
-| 🔍 | **自动巡检** | 后台定时检查额度并触发轮转 |
-| 📤 | **导出认证** | 一键导出 Codex CLI 格式 auth.json，直连 OpenAI 不走代理 |
-| 🐳 | **Docker** | 支持容器部署与数据持久化 |
+## Quick Start
 
-**首次使用建议直接看**：[从零开始部署教程](docs/getting-started.md)
-
-## 快速开始
-
-### 安装
+### Backend
 
 ```bash
-# Linux
-bash setup.sh
-# 或手动: uv sync && uv run playwright install chromium
-
-# Windows / macOS
 uv sync
 uv run playwright install chromium
-```
-
-支持 Linux、Windows、macOS。Windows/macOS 不需要 xvfb。
-
-### 启动
-
-```bash
-# Web 面板 + API（推荐）
 uv run autoteam api
-
-# 或直接轮转
-uv run autoteam rotate
 ```
 
-首次启动会自动引导配置 CloudMail、CPA、API Key，并验证连通性。
+Then open `http://localhost:8787`.
 
-### Docker 部署
+### Frontend
 
 ```bash
-git clone https://github.com/cnitlrt/AutoTeam.git && cd AutoTeam
-mkdir -p data && cp .env.example data/.env
-# 编辑 data/.env 填入配置（或启动后在 Web 页面配置）
-docker compose up -d
+cd web
+npm ci
+npm run build
 ```
 
-详见 [Docker 部署文档](docs/docker.md)
+## Configuration
 
-### CLI 命令
+Important local configuration lives in `.env`.
 
-| 命令 | 说明 |
-|------|------|
-| `api` | 启动 Web 面板 + HTTP API（默认端口 8787） |
-| `rotate [N]` | 智能轮转，补满到 N 个（默认 5） |
-| `status` | 查看账号状态 |
-| `check` | 检查额度 |
-| `add` | 添加新账号 |
-| `manual-add` | 手动 OAuth 添加账号（打开链接登录后粘贴回调 URL） |
-| `fill [N]` | 补满成员 |
-| `cleanup [N]` | 清理多余成员 |
-| `sync` | 同步认证文件到 CPA |
-| `pull-cpa` | 从 CPA 反向同步认证文件到本地 |
-| `admin-login` | 管理员登录 |
+Useful variables in this fork:
 
-更多参数与接口说明见 [API 文档](docs/api.md)。
+- `API_KEY`: API access key for the web console
+- `CPA_URL` / `CPA_KEY`: CPA integration settings
+- `PLAYWRIGHT_HEADLESS=1`: run browser automation without popping visible
+  browser windows
 
-## Web 管理面板
+See `.env.example` for the current template.
 
-启动 `uv run autoteam api` 后访问 `http://localhost:8787`。
+## CI
 
-| 页面 | 功能 |
-|------|------|
-| 📊 仪表盘 | 账号统计 + 状态表格 + 登录/移出/删除/同步操作 |
-| 👥 Team 成员 | 全部 Team 成员（含外部成员） |
-| 🔁 账号池操作 | 轮转、检查、补满、添加、清理等会直接改变账号池状态的操作 |
-| 🔄 同步中心 | 同步账号、同步 CPA、拉取 CPA 等对账/同步动作 |
-| 🔐 OAuth 登录 | 生成认证链接；优先自动接收 localhost 回调，失败时也可手动粘贴回调 URL |
-| 📜 任务历史 | 查看后台任务执行状态、参数、耗时与结果 |
-| 📋 日志 | 实时日志查看器 |
-| ⚙️ 设置 | 管理员登录 + 主号 Codex 同步 + 巡检配置 |
+GitHub Actions in this fork run a simple CI pipeline:
 
-## 文档
+- Python syntax validation
+- Frontend production build
 
-| 文档 | 内容 |
-|------|------|
-| [从零开始部署](docs/getting-started.md) | 完整的首次部署教程，从安装到首次轮转 |
-| [配置说明](docs/configuration.md) | .env 配置项、管理员登录、认证文件格式 |
-| [Docker 部署](docs/docker.md) | Docker Compose、数据持久化、Web 配置 |
-| [API 文档](docs/api.md) | 全部 HTTP 端点、调用示例 |
-| [工作原理](docs/architecture.md) | 轮转流程、状态机、项目结构、依赖 |
-| [常见问题](docs/troubleshooting.md) | 安装/登录/轮转/Docker/Web 面板问题 |
+This keeps the checks easy to understand and avoids style-only failures caused
+by auto-format hooks running inside CI.
 
-## 适用场景
+## Upstream
 
-- 需要维持固定数量的 Team 可用席位
-- 需要把 Codex 认证文件同步到 CLIProxyAPI
-- 需要在 Web 面板里完成日常轮转、对账、OAuth 导入
+Original upstream repository:
 
-## 已知限制
+- https://github.com/cnitlrt/AutoTeam
 
-- **IP 风险** — VPS 的 IP 容易被 OpenAI/Cloudflare 标记，建议使用住宅代理
-- **并发限制** — 同一时间只允许一个 Playwright 操作
-- **验证码** — OpenAI 验证码有效期短，网络延迟可能导致过期
-
-更多详见 [常见问题](docs/troubleshooting.md)
-
-## 友情链接
-
-感谢 **LinuxDo** 社区的支持！
-
-[![LinuxDo](https://img.shields.io/badge/社区-LinuxDo-blue?style=for-the-badge)](https://linux.do/)
-
----
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=cnitlrt/AutoTeam&type=Date)](https://star-history.com/#cnitlrt/AutoTeam&Date)
+This fork keeps the upstream remote as `upstream` so changes can still be
+reviewed or cherry-picked when needed.
