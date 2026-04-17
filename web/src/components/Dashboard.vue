@@ -60,7 +60,7 @@
               <td class="px-4 py-3 text-gray-400 text-xs">{{ quotaReset(acc, 'weekly') }}</td>
               <td class="px-4 py-3 text-right space-x-2">
                 <button
-                  v-if="acc.status !== 'active'"
+                  v-if="!acc.is_main_account && acc.status !== 'active'"
                   @click="loginAccount(acc.email)"
                   :disabled="actionDisabled || actionEmail === acc.email"
                   class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
@@ -70,7 +70,7 @@
                   {{ actionEmail === acc.email && actionType === 'login' ? '登录中...' : '登录' }}
                 </button>
                 <button
-                  v-if="acc.status === 'active'"
+                  v-if="!acc.is_main_account && acc.status === 'active'"
                   @click="kickAccount(acc.email)"
                   :disabled="actionDisabled || actionEmail === acc.email"
                   class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
@@ -80,13 +80,14 @@
                   {{ actionEmail === acc.email && actionType === 'kick' ? '移出中...' : '移出' }}
                 </button>
                 <button
-                  v-if="acc.status === 'active'"
+                  v-if="acc.status === 'active' || acc.is_main_account"
                   @click="exportCodexAuth(acc.email)"
                   :disabled="actionEmail === acc.email"
                   class="px-3 py-1.5 rounded-lg text-xs font-medium border transition bg-cyan-600/10 text-cyan-400 border-cyan-500/30 hover:bg-cyan-600/20">
                   导出
                 </button>
                 <button
+                  v-if="!acc.is_main_account"
                   @click="removeAccount(acc.email)"
                   :disabled="actionDisabled || actionEmail === acc.email"
                   class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"

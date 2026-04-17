@@ -357,10 +357,53 @@ def _is_main_account_email(email: str | None) -> bool:
     return bool(_normalized_email(email)) and _normalized_email(email) == _normalized_email(get_admin_email())
 
 
-def _sanitize_account(acc: dict) -> dict:
+def _quota_snapshot_status(quota_info: dict | None) -> str:
+    if not isinstance(quota_info, dict):
+        return ""
+
+    values = []
+    for key in ("primary_pct", "weekly_pct"):
+        value = quota_info.get(key)
+        if isinstance(value, (int, float)):
+            values.append(value)
+
+    if not values:
+        return ""
+    return "exhausted" if any(value >= 100 for value in values) else "active"
+
+
+def _resolve_status_auth_file(acc: dict) -> str:
+    auth_file = (acc.get("auth_file") or "").strip()
+    if auth_file and Path(auth_file).exists():
+        return auth_file
+
+    if _is_main_account_email(acc.get("email")):
+        from autoteam.codex_auth import get_saved_main_auth_file
+
+        saved_auth_file = get_saved_main_auth_file()
+        if saved_auth_file and Path(saved_auth_file).exists():
+            return saved_auth_file
+
+    return ""
+
+
+def _display_account_status(acc: dict, quota_snapshot: dict | None = None) -> str:
+    status = acc.get("status", "")
+    if not _is_main_account_email(acc.get("email")):
+        return status
+
+    quota_status = _quota_snapshot_status(quota_snapshot) or _quota_snapshot_status(acc.get("last_quota"))
+    if quota_status:
+        return quota_status
+
+    return "active" if _resolve_status_auth_file(acc) else status
+
+
+def _sanitize_account(acc: dict, quota_snapshot: dict | None = None) -> dict:
     """脱敏账号信息（去掉 password 等敏感字段）"""
     sanitized = {k: v for k, v in acc.items() if k not in ("password", "cloudmail_account_id")}
     sanitized["is_main_account"] = _is_main_account_email(acc.get("email"))
+    sanitized["status"] = _display_account_status(acc, quota_snapshot)
     return sanitized
 
 
@@ -1143,31 +1186,39 @@ def get_status():
     quota_cache = {}
 
     for acc in accounts:
-        if acc["status"] == STATUS_ACTIVE and acc.get("auth_file") and Path(acc["auth_file"]).exists():
-            try:
-                auth_data = json.loads(read_text(Path(acc["auth_file"])))
-                access_token = auth_data.get("access_token")
-                if access_token:
-                    status, info = check_codex_quota(access_token)
-                    if status == "ok" and isinstance(info, dict):
-                        quota_cache[acc["email"]] = info
-                    elif status == "exhausted":
-                        quota_info = quota_result_quota_info(info)
-                        if quota_info:
-                            quota_cache[acc["email"]] = quota_info
-            except Exception:
-                pass
+        if acc["status"] != STATUS_ACTIVE and not _is_main_account_email(acc.get("email")):
+            continue
+
+        auth_file = _resolve_status_auth_file(acc)
+        if not auth_file:
+            continue
+
+        try:
+            auth_data = json.loads(read_text(Path(auth_file)))
+            access_token = auth_data.get("access_token")
+            if access_token:
+                status, info = check_codex_quota(access_token)
+                if status == "ok" and isinstance(info, dict):
+                    quota_cache[acc["email"]] = info
+                elif status == "exhausted":
+                    quota_info = quota_result_quota_info(info)
+                    if quota_info:
+                        quota_cache[acc["email"]] = quota_info
+        except Exception:
+            pass
+
+    sanitized_accounts = [_sanitize_account(a, quota_cache.get(a.get("email"))) for a in accounts]
 
     summary = {
-        "active": sum(1 for a in accounts if a["status"] == STATUS_ACTIVE),
-        "standby": sum(1 for a in accounts if a["status"] == STATUS_STANDBY),
-        "exhausted": sum(1 for a in accounts if a["status"] == STATUS_EXHAUSTED),
-        "pending": sum(1 for a in accounts if a["status"] == STATUS_PENDING),
-        "total": len(accounts),
+        "active": sum(1 for a in sanitized_accounts if a["status"] == STATUS_ACTIVE),
+        "standby": sum(1 for a in sanitized_accounts if a["status"] == STATUS_STANDBY),
+        "exhausted": sum(1 for a in sanitized_accounts if a["status"] == STATUS_EXHAUSTED),
+        "pending": sum(1 for a in sanitized_accounts if a["status"] == STATUS_PENDING),
+        "total": len(sanitized_accounts),
     }
 
     return {
-        "accounts": [_sanitize_account(a) for a in accounts],
+        "accounts": sanitized_accounts,
         "summary": summary,
         "quota_cache": quota_cache,
     }
@@ -1501,7 +1552,10 @@ def _auto_check_loop():
             active = [
                 a
                 for a in accounts
-                if a["status"] == STATUS_ACTIVE and a.get("auth_file") and Path(a["auth_file"]).exists()
+                if a["status"] == STATUS_ACTIVE
+                and not _is_main_account_email(a.get("email"))
+                and a.get("auth_file")
+                and Path(a["auth_file"]).exists()
             ]
 
             if not active:

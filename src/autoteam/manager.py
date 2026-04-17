@@ -497,10 +497,11 @@ def cmd_check():
                 # token 失效，先看历史额度（重置时间已过的不算）
                 lq = acc.get("last_quota")
                 if lq:
-                    exhausted_info = get_quota_exhausted_info(lq)
+                    exhausted_info = _pending_historical_exhausted_info(lq)
                     if exhausted_info:
                         resets_at = quota_result_resets_at(exhausted_info) or int(time.time() + 18000)
-                        logger.warning("[%s] token 失效，但历史额度显示已用完，直接标记 exhausted", email)
+                        window_label = _quota_window_label(exhausted_info.get("window"))
+                        logger.warning("[%s] token 失效，但历史%s额度未恢复，直接标记 exhausted", email, window_label)
                         update_account(
                             email,
                             status=STATUS_EXHAUSTED,
@@ -791,6 +792,46 @@ def _page_excerpt(page, limit=240):
         return page.locator("body").inner_text(timeout=1500)[:limit].replace("\n", " ")
     except Exception:
         return ""
+
+
+def _quota_window_label(window: str | None) -> str:
+    if window == "weekly":
+        return "周"
+    if window == "combined":
+        return "5h和周"
+    if window == "primary":
+        return "5h"
+    return "额度"
+
+
+def _pending_historical_exhausted_info(quota_info, now=None):
+    """仅当历史额度快照对应的耗尽窗口尚未重置时，才返回耗尽详情。"""
+    exhausted_info = get_quota_exhausted_info(quota_info)
+    if not exhausted_info:
+        return None
+
+    current_ts = time.time() if now is None else now
+    resets_at = quota_result_resets_at(exhausted_info)
+    if resets_at and current_ts >= resets_at:
+        return None
+
+    return exhausted_info
+
+
+def _submit_reinvite_primary_step(page, field, labels, step_name, wait_seconds=0):
+    """只点击当前表单的主按钮，避免误点 Google / Apple / Microsoft 登录入口。"""
+    if not _click_primary_auth_button(page, field, labels):
+        logger.warning("[轮转] %s 时未找到主提交按钮 | URL: %s | body=%s", step_name, page.url, _page_excerpt(page))
+        return False
+
+    if wait_seconds:
+        time.sleep(wait_seconds)
+
+    if _is_google_redirect(page):
+        logger.warning("[轮转] %s 后误跳转到 Google 登录: %s", step_name, page.url)
+        return False
+
+    return True
 
 
 def _first_visible_editable_locator(page, selectors, timeout=800):
@@ -1471,6 +1512,7 @@ def reinvite_account(chatgpt_api, mail_client, acc):
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
         )
         page = context.new_page()
+        restore_failed = False
 
         # 直接去登录页
         page.goto("https://chatgpt.com/auth/login", wait_until="domcontentloaded", timeout=60000)
@@ -1498,23 +1540,30 @@ def reinvite_account(chatgpt_api, mail_client, acc):
             if email_input.is_visible(timeout=5000):
                 email_input.fill(email)
                 time.sleep(0.5)
-                page.locator(
-                    'button:has-text("Continue"), button:has-text("继续"), button[type="submit"]'
-                ).first.click()
-                time.sleep(3)
+                if not _submit_reinvite_primary_step(
+                    page, email_input, ["Continue", "继续"], "提交邮箱", wait_seconds=3
+                ):
+                    restore_failed = True
         except Exception:
             pass
 
         # 输入密码 / 点击一次性验证码登录
         pwd_input = page.locator('input[type="password"]').first
         try:
-            if pwd_input.is_visible(timeout=5000):
+            if not restore_failed and _is_google_redirect(page):
+                restore_failed = True
+            if not restore_failed and pwd_input.is_visible(timeout=5000):
                 if password:
                     pwd_input.fill(password)
                     time.sleep(0.5)
-                    page.locator(
-                        'button:has-text("Continue"), button:has-text("继续"), button[type="submit"]'
-                    ).first.click()
+                    if not _submit_reinvite_primary_step(
+                        page,
+                        pwd_input,
+                        ["Continue", "继续", "Log in", "登录"],
+                        "提交密码",
+                        wait_seconds=8,
+                    ):
+                        restore_failed = True
                 else:
                     otp_btn = page.locator(
                         'button:has-text("一次性验证码"), button:has-text("one-time"), button:has-text("email login")'
@@ -1522,11 +1571,19 @@ def reinvite_account(chatgpt_api, mail_client, acc):
                     if otp_btn.is_visible(timeout=3000):
                         logger.info("[轮转] 无密码，点击一次性验证码登录")
                         otp_btn.click()
+                        time.sleep(8)
+                        if _is_google_redirect(page):
+                            logger.warning("[轮转] 切换一次性验证码登录后误跳转到 Google 登录: %s", page.url)
+                            restore_failed = True
                     else:
-                        page.locator(
-                            'button:has-text("Continue"), button:has-text("继续"), button[type="submit"]'
-                        ).first.click()
-                time.sleep(8)
+                        if not _submit_reinvite_primary_step(
+                            page,
+                            pwd_input,
+                            ["Continue", "继续", "Log in", "登录"],
+                            "提交登录步骤",
+                            wait_seconds=8,
+                        ):
+                            restore_failed = True
         except Exception:
             pass
 
@@ -1539,7 +1596,7 @@ def reinvite_account(chatgpt_api, mail_client, acc):
         except Exception:
             code_input = None
 
-        if code_input and mail_client:
+        if not restore_failed and code_input and mail_client:
             import re
 
             logger.info("[轮转] 等待登录验证码...")
@@ -1563,14 +1620,26 @@ def reinvite_account(chatgpt_api, mail_client, acc):
                 logger.info("[轮转] 输入验证码: %s", otp)
                 code_input.fill(otp)
                 time.sleep(0.5)
-                page.locator(
-                    'button:has-text("Continue"), button:has-text("继续"), button[type="submit"]'
-                ).first.click()
-                time.sleep(5)
+                if not _submit_reinvite_primary_step(
+                    page,
+                    code_input,
+                    ["Continue", "继续", "Verify", "验证"],
+                    "提交邮箱验证码",
+                    wait_seconds=5,
+                ):
+                    restore_failed = True
 
         screenshot(page, "reinvite_final.png")
         logger.info("[轮转] 当前 URL: %s", page.url)
+        if not restore_failed and _is_google_redirect(page):
+            logger.warning("[轮转] 登录流程误跳转到 Google 登录: %s", page.url)
+            restore_failed = True
         browser.close()
+
+    if restore_failed:
+        logger.warning("[轮转] 旧账号恢复流程失败，保持 standby: %s", email)
+        update_account(email, status=STATUS_STANDBY)
+        return False
 
     if not _is_email_in_team(email):
         logger.warning("[轮转] 旧账号登录后仍未进入 Team，恢复失败: %s", email)
@@ -1774,6 +1843,12 @@ def cmd_rotate(target_seats=5):
                         if status_str == "auth_error":
                             lq = acc.get("last_quota")
                             if lq:
+                                exhausted_info = _pending_historical_exhausted_info(lq)
+                                if exhausted_info:
+                                    window_label = _quota_window_label(exhausted_info.get("window"))
+                                    logger.info("[4/5] 跳过 %s（%s额度未恢复）", email, window_label)
+                                    skipped.append(acc)
+                                    continue
                                 p_resets = lq.get("primary_resets_at", 0)
                                 if p_resets and time.time() >= p_resets:
                                     logger.info("[4/5] %s 的 5h 重置时间已过，视为额度已恢复", email)
@@ -1792,6 +1867,12 @@ def cmd_rotate(target_seats=5):
             if not quota_ok:
                 lq = acc.get("last_quota")
                 if lq:
+                    exhausted_info = _pending_historical_exhausted_info(lq)
+                    if exhausted_info:
+                        window_label = _quota_window_label(exhausted_info.get("window"))
+                        logger.info("[4/5] 跳过 %s（%s额度未恢复）", email, window_label)
+                        skipped.append(acc)
+                        continue
                     p_resets = lq.get("primary_resets_at", 0)
                     if p_resets and time.time() >= p_resets:
                         # 重置时间已过，旧数据作废，视为额度已恢复
