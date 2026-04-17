@@ -34,7 +34,6 @@ from autoteam.accounts import (
     STATUS_STANDBY,
     add_account,
     find_account,
-    get_next_reusable_account,
     get_standby_accounts,
     load_accounts,
     save_accounts,
@@ -2195,25 +2194,40 @@ def cmd_fill(target=5):
             return
 
         logger.info("[填充] 需要添加 %d 个账号", need)
+        standby_list = [
+            a
+            for a in get_standby_accounts()
+            if a.get("_quota_recovered") and not _is_main_account_email(a.get("email"))
+        ]
+        standby_index = 0
 
         for i in range(need):
             logger.info("[填充] 添加第 %d/%d 个账号...", i + 1, need)
 
             # 优先复用 standby 中额度已恢复的旧账号
-            reusable = get_next_reusable_account()
-            if reusable and reusable.get("_quota_recovered"):
+            added = False
+            while standby_index < len(standby_list):
+                reusable = standby_list[standby_index]
+                standby_index += 1
                 email = reusable["email"]
                 logger.info("[填充] 复用旧账号: %s", email)
                 # 确保 chatgpt 浏览器可用
                 if not chatgpt.browser:
                     chatgpt.start()
-                reinvite_account(chatgpt, mail_client, reusable)
-            else:
+                added = reinvite_account(chatgpt, mail_client, reusable)
+                if added:
+                    break
+                logger.warning("[填充] 复用旧账号失败，尝试下一个旧账号: %s", email)
+
+            if not added:
                 # 创建新账号
                 logger.info("[填充] 创建新账号...")
                 if not chatgpt.browser:
                     chatgpt.start()
-                create_new_account(chatgpt, mail_client)
+                added = create_new_account(chatgpt, mail_client)
+
+            if not added:
+                logger.warning("[填充] 本轮补位失败，第 %d/%d 个空缺仍未填上", i + 1, need)
 
             # 验证成员数
             if not chatgpt.browser:

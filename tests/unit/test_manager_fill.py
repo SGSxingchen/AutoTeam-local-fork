@@ -1,0 +1,62 @@
+from autoteam import manager
+
+
+class _FakeChatGPT:
+    def __init__(self):
+        self.browser = True
+        self.started = 0
+        self.stopped = 0
+
+    def start(self):
+        self.browser = True
+        self.started += 1
+
+    def stop(self):
+        self.browser = False
+        self.stopped += 1
+
+
+class _FakeMailClient:
+    def login(self):
+        return None
+
+
+def test_cmd_fill_tries_other_reusable_accounts_before_creating_new(monkeypatch):
+    chatgpt = _FakeChatGPT()
+    count_values = iter([4, 5])
+    events = []
+
+    monkeypatch.setattr(manager, "ChatGPTTeamAPI", lambda: chatgpt)
+    monkeypatch.setattr(manager, "CloudMailClient", lambda: _FakeMailClient())
+    monkeypatch.setattr(manager, "get_team_member_count", lambda _chatgpt: next(count_values))
+    monkeypatch.setattr(
+        manager,
+        "get_standby_accounts",
+        lambda: [
+            {"email": "old-1@example.com", "_quota_recovered": True},
+            {"email": "old-2@example.com", "_quota_recovered": True},
+        ],
+    )
+
+    def fake_reinvite(_chatgpt, _mail, acc):
+        events.append(("reinvite", acc["email"]))
+        return acc["email"] == "old-2@example.com"
+
+    monkeypatch.setattr(manager, "reinvite_account", fake_reinvite)
+    monkeypatch.setattr(
+        manager,
+        "create_new_account",
+        lambda _chatgpt, _mail: events.append(("create", None)) or True,
+    )
+    monkeypatch.setattr(manager, "sync_to_cpa", lambda: events.append(("sync", None)))
+    monkeypatch.setattr(manager, "cmd_status", lambda: events.append(("status", None)))
+
+    manager.cmd_fill(target=5)
+
+    assert events == [
+        ("reinvite", "old-1@example.com"),
+        ("reinvite", "old-2@example.com"),
+        ("sync", None),
+        ("status", None),
+    ]
+    assert chatgpt.stopped == 1
