@@ -14,9 +14,9 @@ cp .env.example .env
 | `CLOUDMAIL_EMAIL` | CloudMail 登录邮箱 | 是 |
 | `CLOUDMAIL_PASSWORD` | CloudMail 登录密码 | 是 |
 | `CLOUDMAIL_DOMAIN` | 临时邮箱域名（如 `@example.com`） | 是 |
-| `CPA_URL` | CLIProxyAPI 地址 | 否（默认 `http://127.0.0.1:8317`） |
+| `CPA_URL` | CLIProxyAPI 地址 | 是（留空使用默认 `http://127.0.0.1:8317`） |
 | `CPA_KEY` | CPA 管理密钥 | 是 |
-| `API_KEY` | Web 面板 / API 鉴权密钥 | 否（首次启动自动生成） |
+| `API_KEY` | Web 面板 / API 鉴权密钥 | 是（首次启动可自动生成） |
 | `PLAYWRIGHT_PROXY_URL` | Playwright 浏览器代理 URL，如 `socks5://user:pass@host:port` | 否 |
 | `PLAYWRIGHT_PROXY_BYPASS` | Playwright 代理绕过列表，如 `localhost,127.0.0.1` | 否 |
 | `AUTO_CHECK_THRESHOLD` | 额度低于此百分比触发轮转 | 否（默认 `10`） |

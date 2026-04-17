@@ -101,9 +101,12 @@ def post_setup_save(config: SetupConfig):
     """保存配置到 .env 并验证连通性"""
     import secrets as _secrets
 
-    from autoteam.setup_wizard import _write_env
+    from autoteam.setup_wizard import REQUIRED_CONFIGS, _write_env
 
     data = config.model_dump()
+    defaults = {key: default for key, _prompt, default, _optional in REQUIRED_CONFIGS}
+    if not data.get("CPA_URL"):
+        data["CPA_URL"] = defaults.get("CPA_URL", "http://127.0.0.1:8317")
     if not data.get("API_KEY"):
         data["API_KEY"] = _secrets.token_urlsafe(24)
 

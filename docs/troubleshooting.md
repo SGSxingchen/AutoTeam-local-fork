@@ -170,12 +170,7 @@ volumes:
 
 ### 容器里访问不到宿主机 SOCKS5 代理
 
-如果代理在宿主机上，比如 `host.docker.internal:1080`，Linux Docker 需要给容器补一条 host-gateway 映射：
-
-```yaml
-extra_hosts:
-  - "host.docker.internal:host-gateway"
-```
+如果代理在宿主机上，比如 `host.docker.internal:1080`，请先确认容器内可以解析并访问宿主机代理地址；不同 Docker / Podman 环境的宿主机别名配置方式可能不同。
 
 然后在 `data/.env` 中配置：
 

@@ -118,12 +118,7 @@ docker compose restart
 
 直接打开 `http://your-server:8787`，会显示配置向导页面，在浏览器中填写。
 
-如果你需要让浏览器流量走宿主机 SOCKS5 代理，在 Linux Docker 下还需要给容器增加：
-
-```yaml
-extra_hosts:
-  - "host.docker.internal:host-gateway"
-```
+如果你需要让浏览器流量走宿主机 SOCKS5 代理，请先确认容器内可以解析并访问宿主机代理地址（例如 `host.docker.internal`，或你自己提供的宿主机网关别名）。
 
 然后在 `data/.env` 中加入：
 
