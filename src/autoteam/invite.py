@@ -18,7 +18,6 @@ ChatGPT Team 自动邀请 + 注册工具
 
 import logging
 import os
-import re
 import sys
 import time
 
@@ -185,11 +184,8 @@ def register_with_invite(page, invite_link, email, mail_client, password=None):
                 if "invited" in subject or "invitation" in subject:
                     continue
                 if "openai" in sender or "chatgpt" in sender:
-                    text = em.get("text", "") or em.get("content", "")
-                    # 提取 6 位验证码
-                    code_match = re.search(r"\b(\d{6})\b", text)
-                    if code_match:
-                        verification_code = code_match.group(1)
+                    verification_code = mail_client.extract_verification_code(em)
+                    if verification_code:
                         logger.info("[CloudMail] 收到验证码: %s", verification_code)
                         break
             if verification_code:

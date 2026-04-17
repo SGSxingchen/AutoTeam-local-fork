@@ -1,5 +1,6 @@
 """CloudMail API 客户端 - 管理临时邮箱和读取邮件"""
 
+import html
 import logging
 import re
 import time
@@ -17,6 +18,11 @@ from autoteam.config import (
 )
 
 logger = logging.getLogger(__name__)
+
+_VERIFICATION_CODE_PATTERNS = (
+    r"(?:temporary\s+(?:openai|chatgpt)\s+login\s+code(?:\s+is)?|verification\s+code(?:\s+is)?|login\s+code(?:\s+is)?|code(?:\s+is)?|验证码(?:为|是)?)\D{0,24}(\d{6})",
+    r"\b(\d{6})\b",
+)
 
 
 class CloudMailClient:
@@ -96,6 +102,43 @@ class CloudMailClient:
     def _normalize_email(value):
         return str(value or "").strip().lower()
 
+    @staticmethod
+    def _html_to_visible_text(value):
+        content = str(value or "")
+        if not content:
+            return ""
+
+        content = re.sub(r"(?is)<(script|style)\b.*?>.*?</\1>", " ", content)
+        content = re.sub(r"(?is)<!--.*?-->", " ", content)
+        content = re.sub(r"(?i)<br\\s*/?>", "\n", content)
+        content = re.sub(r"(?i)</(?:p|div|tr|table|h[1-6]|li|td|section|article)>", "\n", content)
+        content = re.sub(r"(?s)<[^>]+>", " ", content)
+        content = html.unescape(content)
+        content = re.sub(r"[\t\r\f\v ]+", " ", content)
+        content = re.sub(r"\n\s+", "\n", content)
+        content = re.sub(r"\n{2,}", "\n", content)
+        return content.strip()
+
+    def extract_verification_code(self, email_data):
+        """从邮件正文中提取 6 位验证码，优先解析可见文本，避免误取 HTML/CSS 中的颜色值。"""
+        sources = []
+
+        plain_text = str(email_data.get("text") or "").strip()
+        if plain_text:
+            sources.append(plain_text)
+
+        html_text = self._html_to_visible_text(email_data.get("content"))
+        if html_text and html_text not in sources:
+            sources.append(html_text)
+
+        for source in sources:
+            for pattern in _VERIFICATION_CODE_PATTERNS:
+                match = re.search(pattern, source, re.IGNORECASE)
+                if match:
+                    return match.group(1)
+
+        return None
+
     def _resolve_account_id_for_email(self, to_email):
         """优先从本地账号池解析 CloudMail accountId。"""
         target = self._normalize_email(to_email)
@@ -123,7 +166,7 @@ class CloudMailClient:
             pass
         return None
 
-    def _filter_recipient_matches(self, emails, to_email):
+    def _filter_recipient_matches(self, emails, to_email, account_id=None):
         """尽量过滤出真正属于目标收件箱的邮件。"""
         target = self._normalize_email(to_email)
         if not target:
@@ -131,6 +174,11 @@ class CloudMailClient:
 
         filtered = []
         for em in emails:
+            if account_id:
+                email_account_id = em.get("accountId")
+                if email_account_id and str(email_account_id) != str(account_id):
+                    continue
+
             candidates = (
                 em.get("accountEmail"),
                 em.get("receiveEmail"),
@@ -164,8 +212,10 @@ class CloudMailClient:
         if resp["code"] != 200:
             return []
         emails = resp["data"].get("list", [])
-        filtered = self._filter_recipient_matches(emails, to_email)
-        return filtered or emails
+        filtered = self._filter_recipient_matches(emails, to_email, account_id=resolved_account_id)
+        if emails and not filtered:
+            logger.warning("[CloudMail] 全局搜索命中了 %d 封邮件，但都不属于目标邮箱 %s，已忽略", len(emails), to_email)
+        return filtered
 
     def list_emails(self, account_id, size=10):
         """获取指定账户的收件列表"""

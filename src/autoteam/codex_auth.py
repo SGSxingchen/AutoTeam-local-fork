@@ -363,8 +363,6 @@ def login_codex_via_browser(email, password, mail_client=None):
         try:
             ci = _page.locator('input[name="code"]').first
             if ci.is_visible(timeout=5000) and mail_client:
-                import re as _re2
-
                 logger.info("[Codex] ChatGPT 登录需要验证码，等待 emailId > %d 的新邮件...", _email_id_before_login)
                 otp = None
                 otp_email_id = 0
@@ -374,10 +372,8 @@ def login_codex_via_browser(email, password, mail_client=None):
                         email_id = em.get("emailId", 0)
                         if email_id <= _email_id_before_login or email_id in _used_email_ids:
                             continue
-                        text = em.get("text", "") or em.get("content", "")
-                        m = _re2.search(r"\b(\d{6})\b", text)
-                        if m:
-                            otp = m.group(1)
+                        otp = mail_client.extract_verification_code(em)
+                        if otp:
                             otp_email_id = email_id
                             break
                     if otp:
@@ -517,7 +513,6 @@ def login_codex_via_browser(email, password, mail_client=None):
 
         if code_input and mail_client:
             logger.info("[Codex] 需要登录验证码，等待 emailId > %d 的新邮件...", _email_id_before_login)
-            import re as _re
 
             start_t = time.time()
             otp_code = None
@@ -531,10 +526,8 @@ def login_codex_via_browser(email, password, mail_client=None):
                     subj = em.get("subject", "").lower()
                     if "invited" in subj or "invitation" in subj:
                         continue
-                    text = em.get("text", "") or em.get("content", "")
-                    match = _re.search(r"\b(\d{6})\b", text)
-                    if match:
-                        otp_code = match.group(1)
+                    otp_code = mail_client.extract_verification_code(em)
+                    if otp_code:
                         otp_email_id = email_id
                         break
                 if otp_code:
@@ -745,8 +738,6 @@ def login_codex_via_browser(email, password, mail_client=None):
             try:
                 otp_input = page.locator(_OTP_INPUT_SELECTORS).first
                 if otp_input.is_visible(timeout=2000) and mail_client:
-                    import re as _re3
-
                     logger.info(
                         "[Codex] 需要邮箱验证码 (step %d)，等待 emailId > %d 的新邮件...",
                         step + 1,
@@ -772,10 +763,8 @@ def login_codex_via_browser(email, password, mail_client=None):
                             subj = (em.get("subject") or "").lower()
                             if "invited" in subj or "invitation" in subj:
                                 continue
-                            text = em.get("text", "") or em.get("content", "")
-                            m = _re3.search(r"\b(\d{6})\b", text)
-                            if m:
-                                otp = m.group(1)
+                            otp = mail_client.extract_verification_code(em)
+                            if otp:
                                 otp_email_id = email_id
                                 break
                         if otp:

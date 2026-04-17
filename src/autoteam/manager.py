@@ -1354,18 +1354,14 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
             code_input = None
 
         if code_input:
-            import re
-
             logger.info("[直接注册] 等待验证码...")
             verification_code = None
             start_t = time.time()
             while time.time() - start_t < MAIL_TIMEOUT:
                 emails = mail_client.search_emails_by_recipient(email, size=10, account_id=cloudmail_account_id)
                 for em in emails:
-                    text = em.get("text", "") or em.get("content", "")
-                    match = re.search(r"\b(\d{6})\b", text)
-                    if match:
-                        verification_code = match.group(1)
+                    verification_code = mail_client.extract_verification_code(em)
+                    if verification_code:
                         break
                 if verification_code:
                     break
