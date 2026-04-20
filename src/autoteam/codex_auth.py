@@ -870,180 +870,32 @@ def login_codex_via_browser(email, password, mail_client=None):
 
 
 def login_codex_via_session():
-    """使用主号 session 直接完成 Codex OAuth 登录。"""
-    code_verifier, code_challenge = _generate_pkce()
-    state = secrets.token_urlsafe(16)
-    auth_url = _build_auth_url(code_challenge, state)
-
-    from autoteam.chatgpt_api import ChatGPTTeamAPI
-
+    """使用管理员 session 复用统一流程完成主号 Codex OAuth 登录。"""
     logger.info("[Codex] 开始使用 session 登录主号 Codex...")
-    auth_code = None
-    chatgpt = ChatGPTTeamAPI()
+
+    flow = SessionCodexAuthFlow(
+        email=get_admin_email(),
+        session_token=get_admin_session_token(),
+        account_id=get_chatgpt_account_id(),
+        workspace_name=get_chatgpt_workspace_name(),
+        password="",
+        password_callback=None,
+        auth_file_callback=lambda _bundle: "",
+    )
 
     try:
-        chatgpt.start()
-        session_token = chatgpt.session_token
-        if not session_token:
-            logger.error("[Codex] 主号会话中未提取到 session token")
+        result = flow.start()
+        step = result.get("step")
+        detail = result.get("detail")
+        logger.info("[Codex] 主号 session OAuth 初始结果: step=%s detail=%s", step, detail)
+        if step != "completed":
+            logger.warning("[Codex] 主号 session OAuth 未直接完成: step=%s detail=%s", step, detail)
             return None
-        cookies = []
-        if len(session_token) > 3800:
-            cookies.extend(
-                [
-                    {
-                        "name": "__Secure-next-auth.session-token.0",
-                        "value": session_token[:3800],
-                        "domain": "auth.openai.com",
-                        "path": "/",
-                        "httpOnly": True,
-                        "secure": True,
-                        "sameSite": "Lax",
-                    },
-                    {
-                        "name": "__Secure-next-auth.session-token.1",
-                        "value": session_token[3800:],
-                        "domain": "auth.openai.com",
-                        "path": "/",
-                        "httpOnly": True,
-                        "secure": True,
-                        "sameSite": "Lax",
-                    },
-                ]
-            )
-        else:
-            cookies.append(
-                {
-                    "name": "__Secure-next-auth.session-token",
-                    "value": session_token,
-                    "domain": "auth.openai.com",
-                    "path": "/",
-                    "httpOnly": True,
-                    "secure": True,
-                    "sameSite": "Lax",
-                }
-            )
 
-        cookies.extend(
-            [
-                {
-                    "name": "_account",
-                    "value": chatgpt.account_id,
-                    "domain": "auth.openai.com",
-                    "path": "/",
-                    "secure": True,
-                    "sameSite": "Lax",
-                },
-                {
-                    "name": "oai-did",
-                    "value": chatgpt.oai_device_id,
-                    "domain": "auth.openai.com",
-                    "path": "/",
-                    "secure": True,
-                    "sameSite": "Lax",
-                },
-            ]
-        )
-        chatgpt.context.add_cookies(cookies)
-        page = chatgpt.context.new_page()
-
-        def on_request(request):
-            nonlocal auth_code
-            url = request.url
-            if f"localhost:{CODEX_CALLBACK_PORT}/auth/callback" in url:
-                parsed = urllib.parse.urlparse(url)
-                qs = urllib.parse.parse_qs(parsed.query)
-                auth_code = qs.get("code", [None])[0]
-
-        def on_response(response):
-            nonlocal auth_code
-            url = response.url
-            if f"localhost:{CODEX_CALLBACK_PORT}/auth/callback" in url and not auth_code:
-                parsed = urllib.parse.urlparse(url)
-                qs = urllib.parse.parse_qs(parsed.query)
-                auth_code = qs.get("code", [None])[0]
-
-        def open_oauth_page(tag):
-            page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
-            time.sleep(3)
-            _screenshot(page, f"codex_main_{tag}.png")
-
-        page.on("request", on_request)
-        page.on("response", on_response)
-        open_oauth_page("01_auth_page")
-
-        needs_login = False
-        try:
-            email_input = page.locator('input[name="email"], input[id="email-input"], input[id="email"]').first
-            needs_login = email_input.is_visible(timeout=3000)
-        except Exception:
-            needs_login = False
-
-        if needs_login:
-            logger.warning("[Codex] 主号 OAuth 先落到了登录页，尝试先建立 ChatGPT 登录态后重试...")
-            page.goto("https://chatgpt.com/auth/login", wait_until="domcontentloaded", timeout=60000)
-            time.sleep(5)
-            _screenshot(page, "codex_main_login_bootstrap.png")
-            open_oauth_page("02_auth_retry")
-
-            try:
-                email_input = page.locator('input[name="email"], input[id="email-input"], input[id="email"]').first
-                if email_input.is_visible(timeout=3000):
-                    logger.error("[Codex] session 无法直接用于主号 Codex OAuth，仍落在登录页")
-                    _screenshot(page, "codex_main_invalid_session.png")
-                    return None
-            except Exception:
-                pass
-
-        for step in range(10):
-            if auth_code:
-                break
-
-            try:
-                workspace_name = get_chatgpt_workspace_name()
-                if "workspace" in page.url and workspace_name:
-                    ws_btn = page.locator(f'text="{workspace_name}"').first
-                    if ws_btn.is_visible(timeout=2000):
-                        ws_btn.click()
-                        time.sleep(2)
-                        logger.info("[Codex] 主号选择 workspace: %s", workspace_name)
-                        continue
-            except Exception:
-                pass
-
-            try:
-                consent_btn = page.locator(
-                    'button:has-text("继续"), button:has-text("Continue"), button:has-text("Allow")'
-                ).first
-                if consent_btn.is_visible(timeout=3000):
-                    logger.info("[Codex] 主号点击继续/授权 (step %d)...", step + 1)
-                    consent_btn.click()
-                    time.sleep(4)
-                    continue
-            except Exception:
-                pass
-
-            try:
-                cur = page.url
-                if f"localhost:{CODEX_CALLBACK_PORT}/auth/callback" in cur:
-                    parsed = urllib.parse.urlparse(cur)
-                    qs = urllib.parse.parse_qs(parsed.query)
-                    auth_code = qs.get("code", [None])[0]
-                    if auth_code:
-                        break
-            except Exception:
-                pass
-
-            time.sleep(1)
-
-        if not auth_code:
-            _screenshot(page, "codex_main_no_callback.png")
-            logger.warning("[Codex] 主号未获取到 auth code，当前 URL: %s", page.url)
-            return None
+        info = flow.complete()
+        return info.get("bundle")
     finally:
-        chatgpt.stop()
-
-    return _exchange_auth_code(auth_code, code_verifier)
+        flow.stop()
 
 
 class SessionCodexAuthFlow:

@@ -60,6 +60,29 @@ http://host:8787
 
 浏览器中会显示配置向导页面，填写后自动验证连通性。
 
+## 宿主机服务访问
+
+如果你在 **Linux + Docker** 环境中，需要让容器访问宿主机上的代理、CloudMail 或 CPA，建议在 `docker-compose.yml` 中加入：
+
+```yaml
+services:
+  autoteam:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
+
+然后在 `data/.env` 里使用宿主机别名，例如：
+
+```env
+PLAYWRIGHT_PROXY_URL=socks5://host.docker.internal:3333
+```
+
+说明：
+
+- **Linux Docker** 通常需要手动加上面的 `extra_hosts`
+- **Windows / macOS Docker Desktop** 一般自带 `host.docker.internal`
+- 如果你直接写宿主机局域网 / Tailscale IP，也要确保对应端口对容器可达
+
 ## 容器中的文件权限
 
 容器以 root 运行，`docker-entrypoint.sh` 会把 `/app/data` 下的文件设为可写。

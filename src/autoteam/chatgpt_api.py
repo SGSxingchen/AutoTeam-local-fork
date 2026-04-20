@@ -26,6 +26,49 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 BASE_DIR = PROJECT_ROOT
 SCREENSHOT_DIR = PROJECT_ROOT / "screenshots"
 
+_WORKSPACE_IGNORE_LABELS = {
+    "choose a workspace",
+    "select a workspace",
+    "选择一个工作空间",
+    "选择工作空间",
+    "workspace",
+    "terms of use",
+    "privacy policy",
+    "使用条款",
+    "隐私政策",
+}
+_WORKSPACE_FALLBACK_LABELS = (
+    "personal account",
+    "personal",
+    "个人账户",
+    "个人账号",
+    "free",
+    "免费",
+    "new organization",
+    "新组织",
+    "create organization",
+    "创建组织",
+)
+
+
+def _normalize_workspace_label(text):
+    return " ".join((text or "").split()).strip()
+
+
+def _workspace_candidate_kind(text):
+    text = _normalize_workspace_label(text)
+    if not text:
+        return None
+
+    text_l = text.lower()
+    if text_l in _WORKSPACE_IGNORE_LABELS:
+        return None
+    if len(text) <= 3:
+        return None
+    if any(key in text_l for key in _WORKSPACE_FALLBACK_LABELS):
+        return "fallback"
+    return "preferred"
+
 
 class ChatGPTTeamAPI:
     """通过浏览器内 fetch 调用 ChatGPT Team 内部 API。"""
@@ -114,13 +157,20 @@ class ChatGPTTeamAPI:
 
     def _launch_browser(self):
         SCREENSHOT_DIR.mkdir(exist_ok=True)
-        self.playwright = sync_playwright().start()
-        self.browser = self.playwright.chromium.launch(**get_playwright_launch_options())
-        self.context = self.browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-        )
-        self.page = self.context.new_page()
+        if self.playwright or self.browser or self.context or self.page:
+            self.stop()
+
+        try:
+            self.playwright = sync_playwright().start()
+            self.browser = self.playwright.chromium.launch(**get_playwright_launch_options())
+            self.context = self.browser.new_context(
+                viewport={"width": 1280, "height": 800},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+            )
+            self.page = self.context.new_page()
+        except Exception:
+            self.stop()
+            raise
 
     def _log_login_state(self, label):
         try:
@@ -436,18 +486,6 @@ class ChatGPTTeamAPI:
 
         candidates = []
         seen_texts = set()
-        exclude_keywords = (
-            "personal account",
-            "personal",
-            "个人账户",
-            "个人账号",
-            "free",
-            "免费",
-            "new organization",
-            "新组织",
-            "create organization",
-            "创建组织",
-        )
 
         # 先用 JS 从 DOM 提取可见的 workspace 选项（只取叶子级别文本）
         try:
@@ -475,27 +513,14 @@ class ChatGPTTeamAPI:
                 }
                 return results;
             }""")
-            # 过滤掉标题和无关文本
-            title_keywords = (
-                "选择一个工作空间",
-                "select a workspace",
-                "选择工作空间",
-                "工作空间",
-                "workspace",
-                "chatgpt",
-            )
             for text in js_candidates or []:
+                text = _normalize_workspace_label(text)
                 if text in seen_texts:
                     continue
-                text_l = text.lower()
-                # 跳过标题类文本
-                if text_l in (k.lower() for k in title_keywords):
-                    continue
-                # 跳过太短的（用户名缩写、头像字母等）
-                if len(text) <= 3:
+                kind = _workspace_candidate_kind(text)
+                if kind is None:
                     continue
                 seen_texts.add(text)
-                kind = "fallback" if any(key in text_l for key in exclude_keywords) else "preferred"
                 candidates.append({"id": str(len(candidates)), "label": text, "kind": kind})
         except Exception as e:
             logger.warning("[ChatGPT] JS 提取 workspace 候选失败: %s", e)
@@ -508,14 +533,15 @@ class ChatGPTTeamAPI:
                         try:
                             if not loc.is_visible(timeout=200):
                                 continue
-                            text = loc.inner_text(timeout=500).strip()
+                            text = _normalize_workspace_label(loc.inner_text(timeout=500))
                         except Exception:
                             continue
                         if not text or text in seen_texts or len(text) > 80:
                             continue
+                        kind = _workspace_candidate_kind(text)
+                        if kind is None:
+                            continue
                         seen_texts.add(text)
-                        text_l = text.lower()
-                        kind = "fallback" if any(key in text_l for key in exclude_keywords) else "preferred"
                         candidates.append({"id": str(len(candidates)), "label": text, "kind": kind})
                 except Exception:
                     pass

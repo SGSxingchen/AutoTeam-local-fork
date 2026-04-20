@@ -216,6 +216,41 @@ class _PlaywrightExecutor:
 _pw_executor = _PlaywrightExecutor()
 
 
+def _stop_playwright_resource(resource):
+    if not resource:
+        return
+
+    stop = getattr(resource, "stop", None)
+    if not callable(stop):
+        return
+
+    try:
+        stop()
+    except Exception:
+        pass
+
+
+def _run_playwright_start(factory, starter, *args, **kwargs):
+    resource = factory()
+    try:
+        result = starter(resource, *args, **kwargs)
+        return resource, result
+    except Exception:
+        _stop_playwright_resource(resource)
+        raise
+
+
+def _run_with_chatgpt_session(callback):
+    from autoteam.chatgpt_api import ChatGPTTeamAPI
+
+    chatgpt = ChatGPTTeamAPI()
+    try:
+        chatgpt.start()
+        return callback(chatgpt)
+    finally:
+        chatgpt.stop()
+
+
 def _current_busy_detail(default_message: str):
     if _admin_login_api:
         return {
@@ -579,9 +614,9 @@ def post_admin_login_start(params: AdminEmailParams):
         logger.info("[API] 开始管理员登录: %s", params.email.strip())
 
         def _do_start(email):
-            api = ChatGPTTeamAPI()
-            result = api.begin_admin_login(email)
-            return api, result
+            return _run_playwright_start(
+                ChatGPTTeamAPI, lambda api, login_email: api.begin_admin_login(login_email), email
+            )
 
         api, result = _pw_executor.run(_do_start, params.email.strip())
         step = result["step"]
@@ -817,9 +852,7 @@ def post_main_codex_start():
         from autoteam.codex_auth import MainCodexSyncFlow
 
         def _do_start():
-            flow = MainCodexSyncFlow()
-            result = flow.start()
-            return flow, result
+            return _run_playwright_start(MainCodexSyncFlow, lambda flow: flow.start())
 
         flow, result = _pw_executor.run(_do_start)
         step = result["step"]
@@ -1100,14 +1133,7 @@ def post_kick_account(email: str):
             raise HTTPException(status_code=400, detail=f"账号状态为 {acc['status']}，不是 active")
 
         def _do_kick():
-            from autoteam.chatgpt_api import ChatGPTTeamAPI
-
-            chatgpt = ChatGPTTeamAPI()
-            chatgpt.start()
-            try:
-                return remove_from_team(chatgpt, email)
-            finally:
-                chatgpt.stop()
+            return _run_with_chatgpt_session(lambda chatgpt: remove_from_team(chatgpt, email))
 
         ok = _pw_executor.run(_do_kick)
         if ok:
@@ -1283,11 +1309,8 @@ def get_team_members():
         def _fetch_team_members():
             from autoteam.account_ops import fetch_team_state
             from autoteam.accounts import load_accounts
-            from autoteam.chatgpt_api import ChatGPTTeamAPI
 
-            chatgpt = ChatGPTTeamAPI()
-            chatgpt.start()
-            try:
+            def _collect(chatgpt):
                 members, invites = fetch_team_state(chatgpt)
                 local_emails = {a["email"].lower() for a in load_accounts()}
 
@@ -1315,10 +1338,16 @@ def get_team_members():
                         }
                     )
                 return {"members": result, "total": len(members), "invites": len(invites)}
-            finally:
-                chatgpt.stop()
 
-        return _pw_executor.run(_fetch_team_members)
+            return _run_with_chatgpt_session(_collect)
+
+        try:
+            return _pw_executor.run(_fetch_team_members)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("[API] 获取 Team 成员失败")
+            raise HTTPException(status_code=502, detail=str(exc))
     finally:
         _playwright_lock.release()
 
@@ -1351,11 +1380,7 @@ def post_team_member_remove(params: TeamMemberRemoveParams):
         account_id = get_chatgpt_account_id()
 
         def _do_remove_team_member():
-            from autoteam.chatgpt_api import ChatGPTTeamAPI
-
-            chatgpt = ChatGPTTeamAPI()
-            chatgpt.start()
-            try:
+            def _remove(chatgpt):
                 if member_type == "invite":
                     path = f"/backend-api/accounts/{account_id}/invites/{user_id}"
                     action_text = "取消邀请"
@@ -1365,10 +1390,16 @@ def post_team_member_remove(params: TeamMemberRemoveParams):
 
                 result = chatgpt._api_fetch("DELETE", path)
                 return result, action_text
-            finally:
-                chatgpt.stop()
 
-        result, action_text = _pw_executor.run(_do_remove_team_member)
+            return _run_with_chatgpt_session(_remove)
+
+        try:
+            result, action_text = _pw_executor.run(_do_remove_team_member)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("[API] Team 成员移除失败")
+            raise HTTPException(status_code=502, detail=str(exc))
         if result["status"] not in (200, 204):
             raise HTTPException(status_code=500, detail=f"{action_text}失败: HTTP {result['status']}")
 
