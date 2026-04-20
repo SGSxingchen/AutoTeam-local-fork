@@ -1239,7 +1239,7 @@ class SessionCodexAuthFlow:
         self.page = None
 
 
-class MainCodexSyncFlow(SessionCodexAuthFlow):
+class MainCodexLoginFlow(SessionCodexAuthFlow):
     def __init__(self):
         super().__init__(
             email=get_admin_email(),
@@ -1251,6 +1251,16 @@ class MainCodexSyncFlow(SessionCodexAuthFlow):
             auth_file_callback=save_main_auth_file,
         )
 
+    def complete(self):
+        info = super().complete()
+        return {
+            "email": info.get("email"),
+            "auth_file": info.get("auth_file"),
+            "plan_type": info.get("plan_type"),
+        }
+
+
+class MainCodexSyncFlow(MainCodexLoginFlow):
     def complete(self):
         info = super().complete()
 

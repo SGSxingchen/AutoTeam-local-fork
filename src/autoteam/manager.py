@@ -53,7 +53,6 @@ from autoteam.codex_auth import (
     quota_result_quota_info,
     quota_result_resets_at,
     refresh_access_token,
-    refresh_main_auth_file,
     save_auth_file,
 )
 from autoteam.config import get_playwright_launch_options
@@ -1835,16 +1834,6 @@ def cmd_manual_add():
         flow.stop()
 
 
-def _refresh_main_auth_after_admin_login():
-    try:
-        info = refresh_main_auth_file()
-        logger.info("[管理员登录] 已保存主号认证文件: %s", info.get("auth_file"))
-        return info
-    except Exception as exc:
-        logger.warning("[管理员登录] 主号认证文件生成失败: %s", exc)
-        return None
-
-
 def cmd_admin_login(email=None):
     """交互式完成管理员登录并保存到 state.json。"""
     email = (email or "").strip()
@@ -1866,7 +1855,6 @@ def cmd_admin_login(email=None):
             if step == "completed":
                 info = chatgpt.complete_admin_login()
                 chatgpt.stop()
-                _refresh_main_auth_after_admin_login()
                 logger.info("[管理员登录] 登录完成: %s", info.get("email") or email)
                 if info.get("account_id"):
                     logger.info("[管理员登录] Workspace ID: %s", info["account_id"])
@@ -1947,7 +1935,6 @@ def cmd_admin_session(email=None):
         logger.info("[管理员登录] 开始导入 session_token: %s", email)
         info = chatgpt.import_admin_session(email, session_token)
         chatgpt.stop()
-        _refresh_main_auth_after_admin_login()
         logger.info("[管理员登录] session_token 导入完成: %s", info.get("email") or email)
         if info.get("account_id"):
             logger.info("[管理员登录] Workspace ID: %s", info["account_id"])

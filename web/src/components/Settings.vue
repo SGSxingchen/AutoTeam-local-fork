@@ -159,15 +159,29 @@
 
         <div v-else-if="!codexBusy" class="flex flex-wrap gap-3">
           <button
+            @click="loginMainCodex"
+            :disabled="submitting || syncingMain || deletingMainCpa"
+            class="px-4 py-2 bg-blue-700 hover:bg-blue-600 text-white text-sm rounded-lg transition disabled:opacity-50"
+          >
+            {{ syncingMain && mainCodexSubmittingAction === 'login' ? '登录中...' : '登录主号 Codex' }}
+          </button>
+          <button
             @click="syncMainCodex"
-            :disabled="submitting || syncingMain"
+            :disabled="submitting || syncingMain || deletingMainCpa"
             class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm rounded-lg transition disabled:opacity-50"
           >
-            {{ syncingMain ? '同步中...' : '同步主号 Codex 到 CPA' }}
+            {{ syncingMain && mainCodexSubmittingAction === 'sync' ? '同步中...' : '同步主号 Codex 到 CPA' }}
+          </button>
+          <button
+            @click="deleteMainCodexFromCpa"
+            :disabled="submitting || syncingMain || deletingMainCpa"
+            class="px-4 py-2 bg-amber-700 hover:bg-amber-600 text-white text-sm rounded-lg transition disabled:opacity-50"
+          >
+            {{ deletingMainCpa ? '删除中...' : '从 CPA 删除主号文件' }}
           </button>
           <button
             @click="logoutAdmin"
-            :disabled="submitting || syncingMain"
+            :disabled="submitting || syncingMain || deletingMainCpa"
             class="px-4 py-2 bg-rose-700/80 hover:bg-rose-700 text-white text-sm rounded-lg transition disabled:opacity-50"
           >
             {{ submitting ? '处理中...' : '清除登录态' }}
@@ -261,7 +275,7 @@
 
       <div v-if="codexBusy" class="mt-4 space-y-4 border-t border-gray-800 pt-4">
         <div class="text-sm text-gray-300">
-          主号 Codex 登录继续中
+          主号 Codex{{ codexActionLabel }}继续中
         </div>
 
         <div v-if="props.codexStatus?.step === 'password_required'" class="flex flex-col sm:flex-row gap-3">
@@ -395,6 +409,8 @@ const codexPassword = ref('')
 const codexCode = ref('')
 const submitting = ref(false)
 const syncingMain = ref(false)
+const mainCodexSubmittingAction = ref('')
+const deletingMainCpa = ref(false)
 const message = ref('')
 const messageClass = ref('')
 const adminSubmittingHint = ref('')
@@ -403,6 +419,7 @@ const codexSubmittingHint = ref('')
 const adminConfigured = computed(() => !!props.adminStatus?.configured)
 const adminBusy = computed(() => !!props.adminStatus?.login_in_progress)
 const codexBusy = computed(() => !!props.codexStatus?.in_progress)
+const codexActionLabel = computed(() => props.codexStatus?.action === 'sync' ? '同步' : '登录')
 
 watch(
   () => props.adminStatus,
@@ -570,8 +587,26 @@ async function logoutAdmin() {
   }
 }
 
+async function loginMainCodex() {
+  syncingMain.value = true
+  mainCodexSubmittingAction.value = 'login'
+  codexSubmittingHint.value = '正在打开主号 Codex 登录页...'
+  try {
+    const result = await api.startMainCodexLogin()
+    setMessage(result.status === 'completed' ? (result.message || '主号 Codex 已登录') : '主号 Codex 登录进入下一步')
+    emit('admin-progress')
+  } catch (e) {
+    setMessage(e.message, 'error')
+  } finally {
+    syncingMain.value = false
+    mainCodexSubmittingAction.value = ''
+    codexSubmittingHint.value = ''
+  }
+}
+
 async function syncMainCodex() {
   syncingMain.value = true
+  mainCodexSubmittingAction.value = 'sync'
   codexSubmittingHint.value = '正在打开主号 Codex 登录页...'
   try {
     const result = await api.startMainCodexSync()
@@ -581,12 +616,14 @@ async function syncMainCodex() {
     setMessage(e.message, 'error')
   } finally {
     syncingMain.value = false
+    mainCodexSubmittingAction.value = ''
     codexSubmittingHint.value = ''
   }
 }
 
 async function submitMainCodexPassword() {
   syncingMain.value = true
+  mainCodexSubmittingAction.value = props.codexStatus?.action || 'login'
   codexSubmittingHint.value = '密码已提交，正在等待主号 Codex 登录页响应...'
   try {
     const result = await api.submitMainCodexPassword(codexPassword.value)
@@ -596,12 +633,14 @@ async function submitMainCodexPassword() {
     setMessage(e.message, 'error')
   } finally {
     syncingMain.value = false
+    mainCodexSubmittingAction.value = ''
     codexSubmittingHint.value = ''
   }
 }
 
 async function submitMainCodexCode() {
   syncingMain.value = true
+  mainCodexSubmittingAction.value = props.codexStatus?.action || 'login'
   codexSubmittingHint.value = '验证码已提交，正在等待主号 Codex 登录页响应，通常需要 5 到 10 秒...'
   try {
     const result = await api.submitMainCodexCode(codexCode.value)
@@ -611,6 +650,7 @@ async function submitMainCodexCode() {
     setMessage(e.message, 'error')
   } finally {
     syncingMain.value = false
+    mainCodexSubmittingAction.value = ''
     codexSubmittingHint.value = ''
   }
 }
@@ -625,6 +665,19 @@ async function cancelMainCodexSync() {
     setMessage(e.message, 'error')
   } finally {
     syncingMain.value = false
+  }
+}
+
+async function deleteMainCodexFromCpa() {
+  deletingMainCpa.value = true
+  try {
+    const result = await api.deleteMainCodexFromCpa()
+    setMessage(result.message || '已从 CPA 删除主号文件')
+    emit('refresh')
+  } catch (e) {
+    setMessage(e.message, 'error')
+  } finally {
+    deletingMainCpa.value = false
   }
 }
 

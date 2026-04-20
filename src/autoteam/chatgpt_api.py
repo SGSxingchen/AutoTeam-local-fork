@@ -695,6 +695,50 @@ class ChatGPTTeamAPI:
         logger.warning("[ChatGPT] workspace 点击后仍停留在选择页 | URL=%s", last_url)
         return False
 
+    def _is_chatgpt_ready_url(self):
+        if not self.page:
+            return False
+        url = (self.page.url or "").lower()
+        return "chatgpt.com" in url and "auth" not in url
+
+    def _wait_for_post_workspace_ready(self, timeout=12):
+        deadline = time.time() + timeout
+        last_url = self.page.url if self.page else ""
+        consecutive_chatgpt_ready = 0
+
+        while time.time() < deadline:
+            if not self.page:
+                return False
+
+            try:
+                self.page.wait_for_load_state("domcontentloaded", timeout=1000)
+            except Exception:
+                pass
+
+            url = (self.page.url or "").lower()
+            if "challenge" in url:
+                self._wait_for_cloudflare()
+
+            session_token = self._extract_session_token()
+            if session_token:
+                return True
+
+            if self._is_chatgpt_ready_url():
+                consecutive_chatgpt_ready += 1
+                if self._body_excerpt(limit=120):
+                    return True
+                if consecutive_chatgpt_ready >= 3:
+                    logger.info("[ChatGPT] workspace 跳转后已到达 ChatGPT 页面，继续后续登录检测")
+                    return True
+            else:
+                consecutive_chatgpt_ready = 0
+
+            last_url = self.page.url
+            time.sleep(0.5)
+
+        logger.warning("[ChatGPT] workspace 跳转后页面仍未稳定 | URL=%s", last_url)
+        return False
+
     def select_workspace_option(self, option_id):
         options = self._list_workspace_options()
         for option in options:
@@ -718,8 +762,12 @@ class ChatGPTTeamAPI:
                 self.page.wait_for_load_state("domcontentloaded", timeout=5000)
             except Exception:
                 pass
+            self._wait_for_post_workspace_ready(timeout=12)
             self.workspace_options_cache = []
             self._log_login_state("选择 workspace 后")
+            if self._is_chatgpt_ready_url():
+                logger.info("[ChatGPT] 选择 workspace 后结果: completed(chatgpt) | detail=None")
+                return {"step": "completed", "detail": None}
             step, detail = self._detect_login_step()
             logger.info("[ChatGPT] 选择 workspace 后结果: %s | detail=%s", step, detail)
             return {"step": step, "detail": detail}

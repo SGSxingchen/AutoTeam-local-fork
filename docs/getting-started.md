@@ -127,11 +127,13 @@ PLAYWRIGHT_PROXY_URL=socks5://host.docker.internal:1080
 PLAYWRIGHT_PROXY_BYPASS=localhost,127.0.0.1
 ```
 
-如果代理需要认证，可以写成：
+如果代理需要认证，建议改用 HTTP 代理：
 
 ```dotenv
-PLAYWRIGHT_PROXY_URL=socks5://username:password@host.docker.internal:1080
+PLAYWRIGHT_PROXY_URL=http://username:password@host.docker.internal:1080
 ```
+
+> 注意：Playwright / Chromium 不支持带认证的 socks5，因此不要写成 `socks5://username:password@host:port`。
 
 ## 第三步：管理员登录
 
