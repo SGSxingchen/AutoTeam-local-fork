@@ -492,6 +492,7 @@ def _finish_admin_login(completed: dict):
     global _admin_login_api, _admin_login_step
     api = _admin_login_api
     info = None
+    keep_lock_for_main_codex = False
     try:
         info = _pw_executor.run(api.complete_admin_login)
     finally:
@@ -504,18 +505,23 @@ def _finish_admin_login(completed: dict):
         _admin_login_step = None
         if info and info.get("session_token") and info.get("account_id"):
             try:
-                from autoteam.codex_auth import refresh_main_auth_file
-
-                main_auth = _pw_executor.run(refresh_main_auth_file)
-                if main_auth:
-                    info["main_auth"] = main_auth
-                    logger.info("[API] 管理员登录后已刷新主号认证文件: %s", main_auth.get("auth_file"))
+                step, main_result = _start_main_codex_sync_flow()
+                if step == "completed":
+                    main_auth = main_result.get("info")
+                    if main_auth:
+                        info["main_auth"] = main_auth
+                        logger.info("[API] 管理员登录后已刷新主号认证文件: %s", main_auth.get("auth_file"))
+                else:
+                    keep_lock_for_main_codex = True
+                    info["main_auth_pending"] = True
+                    info["main_auth_step"] = step
+                    logger.info("[API] 管理员登录完成，主号 Codex 刷新等待继续: step=%s", step)
             except Exception as exc:
                 info["main_auth_error"] = str(exc)
                 logger.warning("[API] 管理员登录完成，但刷新主号认证文件失败: %s", exc)
-        if _playwright_lock.locked():
+        if not keep_lock_for_main_codex and _playwright_lock.locked():
             _playwright_lock.release()
-    return {"status": "completed", "admin": _admin_status(), "info": info}
+    return {"status": "completed", "admin": _admin_status(), "codex": _main_codex_status(), "info": info}
 
 
 def _set_pending_admin_login(api, step):
@@ -553,6 +559,24 @@ def _set_pending_main_codex_sync(flow, step):
     _main_codex_flow = flow
     _main_codex_step = step
     return {"status": step, "codex": _main_codex_status()}
+
+
+def _start_main_codex_sync_flow():
+    from autoteam.codex_auth import MainCodexSyncFlow
+
+    def _do_start():
+        return _run_playwright_start(MainCodexSyncFlow, lambda flow: flow.start())
+
+    flow, result = _pw_executor.run(_do_start)
+    step = result["step"]
+    if step == "completed":
+        _set_pending_main_codex_sync(flow, step)
+        return step, _finish_main_codex_sync()
+    if step in ("password_required", "code_required"):
+        return step, _set_pending_main_codex_sync(flow, step)
+
+    _pw_executor.run(flow.stop)
+    raise RuntimeError(result.get("detail") or "无法识别主号 Codex 登录步骤")
 
 
 def _finish_manual_account_flow(result: dict):
@@ -849,21 +873,8 @@ def post_main_codex_start():
         )
 
     try:
-        from autoteam.codex_auth import MainCodexSyncFlow
-
-        def _do_start():
-            return _run_playwright_start(MainCodexSyncFlow, lambda flow: flow.start())
-
-        flow, result = _pw_executor.run(_do_start)
-        step = result["step"]
-        if step == "completed":
-            _main_codex_flow = flow
-            return _finish_main_codex_sync()
-        if step in ("password_required", "code_required"):
-            return _set_pending_main_codex_sync(flow, step)
-        _pw_executor.run(flow.stop)
-        _playwright_lock.release()
-        raise HTTPException(status_code=400, detail=result.get("detail") or "无法识别主号 Codex 登录步骤")
+        _step, result = _start_main_codex_sync_flow()
+        return result
     except HTTPException:
         raise
     except Exception as exc:
