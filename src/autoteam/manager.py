@@ -62,6 +62,7 @@ from autoteam.textio import read_text, write_text
 logger = logging.getLogger(__name__)
 
 MAIL_TIMEOUT = int(os.environ.get("MAIL_TIMEOUT", "180"))
+REUSE_RESET_GRACE_SECONDS = int(os.environ.get("REUSE_RESET_GRACE_SECONDS", "300"))
 
 
 def _normalized_email(value: str | None) -> str:
@@ -836,6 +837,51 @@ def _pending_historical_exhausted_info(quota_info, now=None):
         return None
 
     return exhausted_info
+
+
+def _standby_reuse_hold_info(acc, now=None, grace_seconds=None):
+    """返回 standby 账号在何时之前都不应复用。
+
+    优先使用账号被标记 exhausted 时保存下来的 quota_resets_at，
+    避免仅凭 last_quota.primary_resets_at 误判 5h 已恢复。
+    """
+    current_ts = time.time() if now is None else now
+    grace = REUSE_RESET_GRACE_SECONDS if grace_seconds is None else grace_seconds
+
+    saved_resets_at = 0
+    try:
+        saved_resets_at = int(acc.get("quota_resets_at") or 0)
+    except Exception:
+        saved_resets_at = 0
+
+    if saved_resets_at:
+        hold_until = saved_resets_at + grace
+        if current_ts < hold_until:
+            window = (acc.get("quota_window") or "").strip()
+            if not window:
+                exhausted_info = get_quota_exhausted_info(acc.get("last_quota"))
+                if exhausted_info:
+                    window = exhausted_info.get("window") or ""
+            return {
+                "resets_at": saved_resets_at,
+                "hold_until": hold_until,
+                "window": window,
+                "source": "saved",
+            }
+
+    exhausted_info = get_quota_exhausted_info(acc.get("last_quota"))
+    if exhausted_info:
+        resets_at = quota_result_resets_at(exhausted_info)
+        hold_until = resets_at + grace if resets_at else 0
+        if hold_until and current_ts < hold_until:
+            return {
+                "resets_at": resets_at,
+                "hold_until": hold_until,
+                "window": exhausted_info.get("window") or "",
+                "source": "history",
+            }
+
+    return None
 
 
 def _first_visible_editable_locator(page, selectors, timeout=800):
@@ -1683,40 +1729,23 @@ def cmd_rotate(target_seats=5):
                                 quota_skipped.append(acc)
                                 continue
                             quota_ok = True
-                        # auth_error: token 失效，用 last_quota 判断（但重置时间已过的不算）
                         if status_str == "auth_error":
-                            lq = acc.get("last_quota")
-                            if lq:
-                                exhausted_info = _pending_historical_exhausted_info(lq)
-                                if exhausted_info:
-                                    window_label = _quota_window_label(exhausted_info.get("window"))
-                                    logger.info("[4/5] 跳过 %s（%s额度未恢复）", email, window_label)
-                                    quota_skipped.append(acc)
-                                    continue
-                                p_resets = lq.get("primary_resets_at", 0)
-                                if p_resets and time.time() >= p_resets:
-                                    logger.info("[4/5] %s 的 5h 重置时间已过，视为额度已恢复", email)
-                                    quota_ok = True
-                                else:
-                                    p_remain = 100 - lq.get("primary_pct", 0)
-                                    if p_remain < threshold:
-                                        logger.info("[4/5] 跳过 %s（上次额度 %d%% < %d%%）", email, p_remain, threshold)
-                                        quota_skipped.append(acc)
-                                        continue
-                                    quota_ok = True
+                            logger.info("[4/5] %s 的认证已失效，改用保存的额度信息判断是否可复用", email)
                 except Exception:
                     pass
 
             # 没有认证文件或无法查询额度时，用 last_quota / quota_resets_at 兜底
             if not quota_ok:
+                hold_info = _standby_reuse_hold_info(acc)
+                if hold_info:
+                    window_label = _quota_window_label(hold_info.get("window"))
+                    mins = max(0, int((hold_info["hold_until"] - time.time()) / 60))
+                    logger.info("[4/5] 跳过 %s（保存的%s恢复时间未到，还需约 %d 分钟）", email, window_label, mins)
+                    quota_skipped.append(acc)
+                    continue
+
                 lq = acc.get("last_quota")
                 if lq:
-                    exhausted_info = _pending_historical_exhausted_info(lq)
-                    if exhausted_info:
-                        window_label = _quota_window_label(exhausted_info.get("window"))
-                        logger.info("[4/5] 跳过 %s（%s额度未恢复）", email, window_label)
-                        quota_skipped.append(acc)
-                        continue
                     p_resets = lq.get("primary_resets_at", 0)
                     if p_resets and time.time() >= p_resets:
                         # 重置时间已过，旧数据作废，视为额度已恢复
@@ -1727,15 +1756,6 @@ def cmd_rotate(target_seats=5):
                             logger.info("[4/5] 跳过 %s（历史额度 %d%% < %d%%）", email, p_remain, threshold)
                             quota_skipped.append(acc)
                             continue
-                else:
-                    # 没有 last_quota，看 quota_resets_at 是否已过
-                    resets_at = acc.get("quota_resets_at")
-                    if resets_at and time.time() < resets_at:
-                        mins = max(0, int((resets_at - time.time()) / 60))
-                        logger.info("[4/5] 跳过 %s（%d 分钟后恢复）", email, mins)
-                        quota_skipped.append(acc)
-                        continue
-
             logger.info("[4/5] 复用: %s", email)
             if not chatgpt or not chatgpt.browser:
                 ensure_chatgpt()
