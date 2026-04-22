@@ -73,6 +73,19 @@ mkdir -p data && cp .env.example data/.env
 docker compose up -d
 ```
 
+如果你在 **Linux + Docker** 下需要让容器访问宿主机上的代理 / CloudMail / CPA，建议在 `docker-compose.yml` 中加入：
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
+
+然后把宿主机服务地址写成例如：
+
+```env
+PLAYWRIGHT_PROXY_URL=socks5://host.docker.internal:3333
+```
+
 详见 [Docker 部署文档](docs/docker.md)
 
 ### CLI 命令
