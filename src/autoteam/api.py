@@ -1686,6 +1686,7 @@ def _auto_check_loop():
                 )
 
             shortage = max(0, target_seats - local_active_count)
+            actual_team_count = -1
             trigger_rotate = len(low_accounts) >= cfg["min_low"]
             if not trigger_rotate and shortage > 0:
                 actual_team_count = _auto_check_team_member_count()
@@ -1760,7 +1761,22 @@ def _auto_check_loop():
                 except Exception as e:
                     logger.error("[巡检] 自动轮转失败: %s", e)
             else:
-                logger.info("[巡检] 额度正常且 active 数充足（%d/%d），无需轮转", local_active_count, target_seats)
+                if low_accounts and actual_team_count >= target_seats:
+                    logger.info(
+                        "[巡检] 低额度账号未达到触发阈值（%d/%d），且 Team 实际成员数已满足（%d/%d），无需轮转",
+                        len(low_accounts),
+                        cfg["min_low"],
+                        actual_team_count,
+                        target_seats,
+                    )
+                elif low_accounts:
+                    logger.info(
+                        "[巡检] 低额度账号未达到触发阈值（%d/%d），无需轮转",
+                        len(low_accounts),
+                        cfg["min_low"],
+                    )
+                else:
+                    logger.info("[巡检] 额度正常且 active 数充足（%d/%d），无需轮转", local_active_count, target_seats)
 
         except Exception as e:
             logger.error("[巡检] 巡检异常: %s", e)
