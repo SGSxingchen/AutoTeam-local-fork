@@ -102,3 +102,84 @@ def test_post_setup_save_keeps_cpa_url_required_and_generates_api_key(monkeypatc
     assert written["API_KEY"] == "generated-token"
     assert result["api_key"] == "generated-token"
     assert api.API_KEY == "generated-token"
+
+
+def test_auto_check_persists_reuse_blocking_metadata_before_rotate(tmp_path, monkeypatch):
+    low_auth = tmp_path / "low.json"
+    exhausted_auth = tmp_path / "exhausted.json"
+    low_auth.write_text('{"access_token": "token-low"}', encoding="utf-8")
+    exhausted_auth.write_text('{"access_token": "token-exhausted"}', encoding="utf-8")
+
+    updates = []
+
+    def fake_update_account(email, **kwargs):
+        updates.append((email, kwargs))
+
+    monkeypatch.setattr(api, "_auto_check_config", {"interval": 0, "threshold": 10, "min_low": 2})
+    monkeypatch.setattr(api, "_auto_check_stop", __import__("threading").Event())
+    monkeypatch.setattr(api, "_auto_check_restart", __import__("threading").Event())
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+    monkeypatch.setattr(
+        "autoteam.accounts.load_accounts",
+        lambda: [
+            {"email": "low@example.com", "status": "active", "auth_file": str(low_auth)},
+            {"email": "exhausted@example.com", "status": "active", "auth_file": str(exhausted_auth)},
+        ],
+    )
+    monkeypatch.setattr(
+        "autoteam.codex_auth.check_codex_quota",
+        lambda token: (
+            ("ok", {"primary_pct": 93, "primary_resets_at": 1234567890, "weekly_pct": 1, "weekly_resets_at": 0})
+            if token == "token-low"
+            else (
+                "exhausted",
+                {
+                    "resets_at": 2222222222,
+                    "quota_info": {
+                        "primary_pct": 100,
+                        "primary_resets_at": 2222222222,
+                        "weekly_pct": 100,
+                        "weekly_resets_at": 0,
+                    },
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr("autoteam.accounts.update_account", fake_update_account)
+    monkeypatch.setattr("autoteam.manager.cmd_rotate", lambda *args, **kwargs: None)
+    monkeypatch.setattr(api, "_start_task", lambda *args, **kwargs: None)
+
+    stop_event = api._auto_check_stop
+    wait_calls = {"count": 0}
+
+    def fake_wait(_seconds):
+        wait_calls["count"] += 1
+        return wait_calls["count"] > 1
+
+    monkeypatch.setattr(stop_event, "wait", fake_wait)
+
+    api._auto_check_loop()
+
+    assert len(updates) == 2
+    low_update = next(kwargs for email, kwargs in updates if email == "low@example.com")
+    exhausted_update = next(kwargs for email, kwargs in updates if email == "exhausted@example.com")
+
+    assert low_update["status"] == "exhausted"
+    assert low_update["quota_exhausted_at"]
+    assert low_update["last_quota"] == {
+        "primary_pct": 93,
+        "primary_resets_at": 1234567890,
+        "weekly_pct": 1,
+        "weekly_resets_at": 0,
+    }
+    assert low_update["quota_resets_at"] == 1234567890
+
+    assert exhausted_update["status"] == "exhausted"
+    assert exhausted_update["quota_exhausted_at"]
+    assert exhausted_update["last_quota"] == {
+        "primary_pct": 100,
+        "primary_resets_at": 2222222222,
+        "weekly_pct": 100,
+        "weekly_resets_at": 0,
+    }
+    assert exhausted_update["quota_resets_at"] == 2222222222
