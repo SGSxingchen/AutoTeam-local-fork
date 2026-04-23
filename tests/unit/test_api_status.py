@@ -183,3 +183,160 @@ def test_auto_check_persists_reuse_blocking_metadata_before_rotate(tmp_path, mon
         "weekly_resets_at": 0,
     }
     assert exhausted_update["quota_resets_at"] == 2222222222
+
+
+def test_auto_check_falls_back_when_ok_quota_has_no_reset_time(tmp_path, monkeypatch):
+    auth_file = tmp_path / "low.json"
+    auth_file.write_text('{"access_token": "token-low"}', encoding="utf-8")
+
+    updates = []
+
+    def fake_update_account(email, **kwargs):
+        updates.append((email, kwargs))
+
+    monkeypatch.setattr(api, "_auto_check_config", {"interval": 0, "threshold": 10, "min_low": 1})
+    monkeypatch.setattr(api, "_auto_check_stop", __import__("threading").Event())
+    monkeypatch.setattr(api, "_auto_check_restart", __import__("threading").Event())
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+    monkeypatch.setattr(
+        "autoteam.accounts.load_accounts",
+        lambda: [{"email": "low@example.com", "status": "active", "auth_file": str(auth_file)}],
+    )
+    monkeypatch.setattr(
+        "autoteam.codex_auth.check_codex_quota",
+        lambda _token: ("ok", {"primary_pct": 93, "weekly_pct": 1, "weekly_resets_at": 0}),
+    )
+    monkeypatch.setattr("autoteam.accounts.update_account", fake_update_account)
+    monkeypatch.setattr("autoteam.manager.cmd_rotate", lambda *args, **kwargs: None)
+    monkeypatch.setattr(api, "_start_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr("time.time", lambda: 1000)
+
+    stop_event = api._auto_check_stop
+    wait_calls = {"count": 0}
+
+    def fake_wait(_seconds):
+        wait_calls["count"] += 1
+        return wait_calls["count"] > 1
+
+    monkeypatch.setattr(stop_event, "wait", fake_wait)
+
+    api._auto_check_loop()
+
+    assert len(updates) == 1
+    low_update = updates[0][1]
+    assert low_update["status"] == "exhausted"
+    assert low_update["last_quota"] == {"primary_pct": 93, "weekly_pct": 1, "weekly_resets_at": 0}
+    assert low_update["quota_resets_at"] == 19000
+
+
+def test_auto_check_falls_back_when_exhausted_quota_has_no_reset_time(tmp_path, monkeypatch):
+    auth_file = tmp_path / "exhausted.json"
+    auth_file.write_text('{"access_token": "token-exhausted"}', encoding="utf-8")
+
+    updates = []
+
+    def fake_update_account(email, **kwargs):
+        updates.append((email, kwargs))
+
+    monkeypatch.setattr(api, "_auto_check_config", {"interval": 0, "threshold": 10, "min_low": 1})
+    monkeypatch.setattr(api, "_auto_check_stop", __import__("threading").Event())
+    monkeypatch.setattr(api, "_auto_check_restart", __import__("threading").Event())
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+    monkeypatch.setattr(
+        "autoteam.accounts.load_accounts",
+        lambda: [{"email": "exhausted@example.com", "status": "active", "auth_file": str(auth_file)}],
+    )
+    monkeypatch.setattr(
+        "autoteam.codex_auth.check_codex_quota",
+        lambda _token: (
+            "exhausted",
+            {
+                "quota_info": {
+                    "primary_pct": 100,
+                    "weekly_pct": 100,
+                    "weekly_resets_at": 0,
+                }
+            },
+        ),
+    )
+    monkeypatch.setattr("autoteam.accounts.update_account", fake_update_account)
+    monkeypatch.setattr("autoteam.manager.cmd_rotate", lambda *args, **kwargs: None)
+    monkeypatch.setattr(api, "_start_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr("time.time", lambda: 2000)
+
+    stop_event = api._auto_check_stop
+    wait_calls = {"count": 0}
+
+    def fake_wait(_seconds):
+        wait_calls["count"] += 1
+        return wait_calls["count"] > 1
+
+    monkeypatch.setattr(stop_event, "wait", fake_wait)
+
+    api._auto_check_loop()
+
+    assert len(updates) == 1
+    exhausted_update = updates[0][1]
+    assert exhausted_update["status"] == "exhausted"
+    assert exhausted_update["last_quota"] == {
+        "primary_pct": 100,
+        "weekly_pct": 100,
+        "weekly_resets_at": 0,
+    }
+    assert exhausted_update["quota_resets_at"] == 20000
+
+
+def test_auto_check_triggers_rotate_when_active_count_is_below_target(tmp_path, monkeypatch):
+    auth_files = []
+    for idx in range(3):
+        auth_file = tmp_path / f"active-{idx}.json"
+        auth_file.write_text(json.dumps({"access_token": f"token-{idx}"}), encoding="utf-8")
+        auth_files.append(auth_file)
+
+    started = []
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        started.append(
+            {
+                "command": command,
+                "params": params,
+                "args": args,
+            }
+        )
+
+    monkeypatch.setattr(api, "_auto_check_config", {"interval": 0, "threshold": 10, "min_low": 2})
+    monkeypatch.setattr(api, "_auto_check_stop", __import__("threading").Event())
+    monkeypatch.setattr(api, "_auto_check_restart", __import__("threading").Event())
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+    monkeypatch.setattr(
+        "autoteam.accounts.load_accounts",
+        lambda: [
+            {"email": f"active-{idx}@example.com", "status": "active", "auth_file": str(auth_files[idx])}
+            for idx in range(3)
+        ],
+    )
+    monkeypatch.setattr(
+        "autoteam.codex_auth.check_codex_quota",
+        lambda _token: ("ok", {"primary_pct": 10, "primary_resets_at": 1234567890, "weekly_pct": 1}),
+    )
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda *args, **kwargs: None)
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    stop_event = api._auto_check_stop
+    wait_calls = {"count": 0}
+
+    def fake_wait(_seconds):
+        wait_calls["count"] += 1
+        return wait_calls["count"] > 1
+
+    monkeypatch.setattr(stop_event, "wait", fake_wait)
+
+    api._auto_check_loop()
+
+    assert len(started) == 1
+    assert started[0]["command"] == "auto-rotate"
+    assert started[0]["params"]["target"] == 5
+    assert started[0]["params"]["trigger"] == "auto-check"
+    assert started[0]["params"]["shortage"] == 2
+    assert started[0]["params"]["low_accounts"] == 0
+    assert started[0]["args"] == (5,)

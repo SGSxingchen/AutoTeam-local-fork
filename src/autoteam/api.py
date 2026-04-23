@@ -1607,6 +1607,8 @@ def _auto_check_loop():
     from autoteam.accounts import STATUS_ACTIVE, load_accounts
     from autoteam.codex_auth import check_codex_quota
 
+    target_seats = 5
+
     while not _auto_check_stop.is_set():
         cfg = _auto_check_config
         logger.info(
@@ -1626,6 +1628,9 @@ def _auto_check_loop():
         try:
             cfg = _auto_check_config  # 重新读取
             accounts = load_accounts()
+            local_active_count = sum(
+                1 for a in accounts if a["status"] == STATUS_ACTIVE and not _is_main_account_email(a.get("email"))
+            )
             active = [
                 a
                 for a in accounts
@@ -1634,9 +1639,6 @@ def _auto_check_loop():
                 and a.get("auth_file")
                 and Path(a["auth_file"]).exists()
             ]
-
-            if not active:
-                continue
 
             low_accounts = []
             for acc in active:
@@ -1662,10 +1664,13 @@ def _auto_check_loop():
                     ", ".join(f"{e}({r}%)" for e, r, _status, _info in low_accounts),
                 )
 
-            if len(low_accounts) >= cfg["min_low"]:
+            shortage = max(0, target_seats - local_active_count)
+            trigger_rotate = len(low_accounts) >= cfg["min_low"] or shortage > 0
+
+            if trigger_rotate:
                 # 检查是否有任务在跑
                 if not _playwright_lock.acquire(blocking=False):
-                    logger.info("[巡检] 有任务正在执行，跳过本轮自动轮转")
+                    logger.info("[巡检] 有任务正在执行，跳过本轮自动轮转/补位")
                     continue
                 _playwright_lock.release()
 
@@ -1683,21 +1688,40 @@ def _auto_check_loop():
                         status_kwargs["last_quota"] = info if isinstance(info, dict) else None
                         status_kwargs["quota_resets_at"] = (
                             info.get("primary_resets_at") if isinstance(info, dict) else None
-                        )
+                        ) or int(time.time() + 18000)
                     else:
                         status_kwargs["last_quota"] = quota_result_quota_info(info)
-                        status_kwargs["quota_resets_at"] = quota_result_resets_at(info)
+                        status_kwargs["quota_resets_at"] = quota_result_resets_at(info) or int(time.time() + 18000)
                     update_account(email, **status_kwargs)
 
-                logger.info("[巡检] 触发自动轮转...")
+                if shortage > 0 and len(low_accounts) >= cfg["min_low"]:
+                    logger.info(
+                        "[巡检] 当前 active 数不足: %d/%d，且检测到低额度账号，触发自动轮转...",
+                        local_active_count,
+                        target_seats,
+                    )
+                elif shortage > 0:
+                    logger.info("[巡检] 当前 active 数不足: %d/%d，触发自动补位...", local_active_count, target_seats)
+                else:
+                    logger.info("[巡检] 触发自动轮转...")
                 from autoteam.manager import cmd_rotate
 
                 try:
-                    _start_task("auto-rotate", cmd_rotate, {"target": 5, "trigger": "auto-check"}, 5)
+                    _start_task(
+                        "auto-rotate",
+                        cmd_rotate,
+                        {
+                            "target": target_seats,
+                            "trigger": "auto-check",
+                            "shortage": shortage,
+                            "low_accounts": len(low_accounts),
+                        },
+                        target_seats,
+                    )
                 except Exception as e:
                     logger.error("[巡检] 自动轮转失败: %s", e)
             else:
-                logger.info("[巡检] 额度正常，无需轮转")
+                logger.info("[巡检] 额度正常且 active 数充足（%d/%d），无需轮转", local_active_count, target_seats)
 
         except Exception as e:
             logger.error("[巡检] 巡检异常: %s", e)
