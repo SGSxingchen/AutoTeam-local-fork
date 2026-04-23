@@ -23,7 +23,7 @@ class _FakeMailClient:
 
 def test_cmd_rotate_skips_google_accounts_during_auto_reuse(monkeypatch):
     chatgpt = _FakeChatGPT()
-    count_values = iter([4, 5])
+    count_values = iter([4, 5, 5])
     events = []
 
     monkeypatch.setattr(manager, "sync_account_states", lambda: events.append(("sync_account_states", None)))
@@ -65,7 +65,7 @@ def test_cmd_rotate_skips_google_accounts_during_auto_reuse(monkeypatch):
 
 def test_cmd_rotate_prefers_saved_quota_reset_when_deciding_standby_reuse(monkeypatch):
     chatgpt = _FakeChatGPT()
-    count_values = iter([4, 5])
+    count_values = iter([4, 5, 5])
     events = []
     now = 1_700_000_000
 
@@ -102,6 +102,35 @@ def test_cmd_rotate_prefers_saved_quota_reset_when_deciding_standby_reuse(monkey
         manager,
         "create_new_account",
         lambda _chatgpt, _mail: events.append(("create", None)) or True,
+    )
+    monkeypatch.setattr(manager, "sync_to_cpa", lambda: events.append(("sync_to_cpa", None)))
+
+    manager.cmd_rotate(target_seats=5)
+
+    assert events == [
+        ("sync_account_states", None),
+        ("cmd_check", None),
+        ("create", None),
+        ("sync_to_cpa", None),
+    ]
+
+
+def test_cmd_rotate_stops_creating_when_refreshed_team_count_hits_target(monkeypatch):
+    chatgpt = _FakeChatGPT()
+    count_values = iter([3, 5, 5])
+    events = []
+
+    monkeypatch.setattr(manager, "sync_account_states", lambda: events.append(("sync_account_states", None)))
+    monkeypatch.setattr(manager, "cmd_check", lambda: events.append(("cmd_check", None)))
+    monkeypatch.setattr(manager, "ChatGPTTeamAPI", lambda: chatgpt)
+    monkeypatch.setattr(manager, "CloudMailClient", lambda: _FakeMailClient())
+    monkeypatch.setattr(manager, "load_accounts", lambda: [])
+    monkeypatch.setattr(manager, "get_team_member_count", lambda _chatgpt: next(count_values))
+    monkeypatch.setattr(manager, "get_standby_accounts", lambda: [])
+    monkeypatch.setattr(
+        manager,
+        "create_new_account",
+        lambda _chatgpt, _mail: events.append(("create", None)) or False,
     )
     monkeypatch.setattr(manager, "sync_to_cpa", lambda: events.append(("sync_to_cpa", None)))
 

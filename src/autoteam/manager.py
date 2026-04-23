@@ -1597,6 +1597,15 @@ def cmd_rotate(target_seats=5):
             mail_client.login()
         return mail_client
 
+    def refresh_current_count(current_count, stage_label):
+        if not chatgpt or not chatgpt.browser:
+            ensure_chatgpt()
+        latest_count = get_team_member_count(chatgpt)
+        if latest_count >= 0:
+            logger.info("%s 实时成员数: %d/%d", stage_label, latest_count, TARGET)
+            return latest_count
+        return current_count
+
     logger.info("[1/5] 同步 Team 状态...")
     sync_account_states()
 
@@ -1759,10 +1768,15 @@ def cmd_rotate(target_seats=5):
             logger.info("[4/5] 复用: %s", email)
             if not chatgpt or not chatgpt.browser:
                 ensure_chatgpt()
-            if reinvite_account(chatgpt, ensure_mail(), acc):
+            reused = reinvite_account(chatgpt, ensure_mail(), acc)
+            if reused:
                 filled += 1
                 current_count += 1
-            else:
+            current_count = refresh_current_count(current_count, "[4/5]")
+            if current_count >= TARGET:
+                logger.info("[4/5] 当前成员数已达到目标，停止继续补位")
+                break
+            if not reused:
                 quota_skipped.append(acc)
 
         if quota_skipped:
@@ -1782,6 +1796,10 @@ def cmd_rotate(target_seats=5):
                     ensure_chatgpt()
                 if create_new_account(chatgpt, ensure_mail()):
                     current_count += 1
+                current_count = refresh_current_count(current_count, "[5/5]")
+                if current_count >= TARGET:
+                    logger.info("[5/5] 当前成员数已达到目标，停止继续创建")
+                    break
 
         if not chatgpt or not chatgpt.browser:
             ensure_chatgpt()
@@ -2103,6 +2121,10 @@ def cmd_fill(target=5):
             new_count = get_team_member_count(chatgpt)
             if new_count >= 0:
                 logger.info("[填充] 当前成员数: %d/%d", new_count, target)
+                current = new_count
+                if new_count >= target:
+                    logger.info("[填充] 当前成员数已达到目标，停止继续添加")
+                    break
 
         logger.info("[填充] 填充完成")
         sync_to_cpa()
