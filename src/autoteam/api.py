@@ -1602,6 +1602,27 @@ _auto_check_stop = threading.Event()
 _auto_check_restart = threading.Event()  # 配置变更时通知线程重启
 
 
+def _auto_check_team_member_count():
+    """查询 Team 实际成员数，供自动巡检的人数兜底判断使用。"""
+    chatgpt = None
+    try:
+        from autoteam.chatgpt_api import ChatGPTTeamAPI
+        from autoteam.manager import get_team_member_count
+
+        chatgpt = ChatGPTTeamAPI()
+        chatgpt.start()
+        return get_team_member_count(chatgpt)
+    except Exception as exc:
+        logger.warning("[巡检] 查询 Team 实际成员数失败: %s", exc)
+        return -1
+    finally:
+        try:
+            if chatgpt and chatgpt.browser:
+                chatgpt.stop()
+        except Exception:
+            pass
+
+
 def _auto_check_loop():
     """后台巡检线程：定期检查额度，多个账号低于阈值时自动轮转"""
     from autoteam.accounts import STATUS_ACTIVE, load_accounts
@@ -1665,7 +1686,25 @@ def _auto_check_loop():
                 )
 
             shortage = max(0, target_seats - local_active_count)
-            trigger_rotate = len(low_accounts) >= cfg["min_low"] or shortage > 0
+            trigger_rotate = len(low_accounts) >= cfg["min_low"]
+            if not trigger_rotate and shortage > 0:
+                actual_team_count = _auto_check_team_member_count()
+                if actual_team_count >= target_seats:
+                    logger.info(
+                        "[巡检] Team 实际成员数已满足（%d/%d），跳过基于 active 数的自动补位",
+                        actual_team_count,
+                        target_seats,
+                    )
+                    shortage = 0
+                elif actual_team_count >= 0:
+                    shortage = max(0, target_seats - actual_team_count)
+                    trigger_rotate = shortage > 0
+                else:
+                    logger.warning(
+                        "[巡检] 当前 active 数不足 (%d/%d)，但 Team 成员数校验失败，暂不触发自动补位",
+                        local_active_count,
+                        target_seats,
+                    )
 
             if trigger_rotate:
                 # 检查是否有任务在跑
