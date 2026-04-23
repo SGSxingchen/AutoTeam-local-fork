@@ -1675,10 +1675,15 @@ def _auto_check_loop():
 
                 for email, remaining, status, info in low_accounts:
                     logger.info("[巡检] %s 剩余 %d%%，标记为 exhausted", email, remaining)
-                    status_kwargs = {"status": STATUS_EXHAUSTED, "quota_exhausted_at": time.time()}
+                    status_kwargs = {
+                        "status": STATUS_EXHAUSTED,
+                        "quota_exhausted_at": time.time(),
+                    }
                     if status == "ok":
                         status_kwargs["last_quota"] = info if isinstance(info, dict) else None
-                        status_kwargs["quota_resets_at"] = info.get("primary_resets_at") if isinstance(info, dict) else None
+                        status_kwargs["quota_resets_at"] = (
+                            info.get("primary_resets_at") if isinstance(info, dict) else None
+                        )
                     else:
                         status_kwargs["last_quota"] = quota_result_quota_info(info)
                         status_kwargs["quota_resets_at"] = quota_result_resets_at(info)
