@@ -1649,15 +1649,17 @@ def _auto_check_loop():
                     if status == "ok" and isinstance(info, dict):
                         remaining = 100 - info.get("primary_pct", 0)
                         if remaining < cfg["threshold"]:
-                            low_accounts.append((acc["email"], remaining))
+                            low_accounts.append((acc["email"], remaining, status, info))
                     elif status == "exhausted":
-                        low_accounts.append((acc["email"], 0))
+                        low_accounts.append((acc["email"], 0, status, info))
                 except Exception:
                     pass
 
             if low_accounts:
                 logger.info(
-                    "[巡检] %d 个账号额度不足: %s", len(low_accounts), ", ".join(f"{e}({r}%)" for e, r in low_accounts)
+                    "[巡检] %d 个账号额度不足: %s",
+                    len(low_accounts),
+                    ", ".join(f"{e}({r}%)" for e, r, _status, _info in low_accounts),
                 )
 
             if len(low_accounts) >= cfg["min_low"]:
@@ -1669,10 +1671,18 @@ def _auto_check_loop():
 
                 # 将低于阈值的账号标记为 exhausted，rotate 会自动移出并补充
                 from autoteam.accounts import STATUS_EXHAUSTED, update_account
+                from autoteam.codex_auth import quota_result_quota_info, quota_result_resets_at
 
-                for email, remaining in low_accounts:
+                for email, remaining, status, info in low_accounts:
                     logger.info("[巡检] %s 剩余 %d%%，标记为 exhausted", email, remaining)
-                    update_account(email, status=STATUS_EXHAUSTED, quota_exhausted_at=time.time())
+                    status_kwargs = {"status": STATUS_EXHAUSTED, "quota_exhausted_at": time.time()}
+                    if status == "ok":
+                        status_kwargs["last_quota"] = info if isinstance(info, dict) else None
+                        status_kwargs["quota_resets_at"] = info.get("primary_resets_at") if isinstance(info, dict) else None
+                    else:
+                        status_kwargs["last_quota"] = quota_result_quota_info(info)
+                        status_kwargs["quota_resets_at"] = quota_result_resets_at(info)
+                    update_account(email, **status_kwargs)
 
                 logger.info("[巡检] 触发自动轮转...")
                 from autoteam.manager import cmd_rotate
