@@ -1,4 +1,5 @@
 import json
+import logging
 
 from autoteam import api
 
@@ -319,6 +320,7 @@ def test_auto_check_triggers_rotate_when_active_count_is_below_target(tmp_path, 
         "autoteam.codex_auth.check_codex_quota",
         lambda _token: ("ok", {"primary_pct": 10, "primary_resets_at": 1234567890, "weekly_pct": 1}),
     )
+    monkeypatch.setattr(api, "_auto_check_team_member_count", lambda: 3)
     monkeypatch.setattr("autoteam.accounts.update_account", lambda *args, **kwargs: None)
     monkeypatch.setattr(api, "_start_task", fake_start_task)
 
@@ -340,3 +342,95 @@ def test_auto_check_triggers_rotate_when_active_count_is_below_target(tmp_path, 
     assert started[0]["params"]["shortage"] == 2
     assert started[0]["params"]["low_accounts"] == 0
     assert started[0]["args"] == (5,)
+
+
+def test_auto_check_skips_shortage_rotate_when_team_is_already_full(tmp_path, monkeypatch):
+    auth_files = []
+    for idx in range(3):
+        auth_file = tmp_path / f"active-{idx}.json"
+        auth_file.write_text(json.dumps({"access_token": f"token-{idx}"}), encoding="utf-8")
+        auth_files.append(auth_file)
+
+    started = []
+
+    def fake_start_task(command, func, params, *args, **kwargs):
+        started.append((command, params, args, kwargs))
+
+    monkeypatch.setattr(api, "_auto_check_config", {"interval": 0, "threshold": 10, "min_low": 2})
+    monkeypatch.setattr(api, "_auto_check_stop", __import__("threading").Event())
+    monkeypatch.setattr(api, "_auto_check_restart", __import__("threading").Event())
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+    monkeypatch.setattr(
+        "autoteam.accounts.load_accounts",
+        lambda: [
+            {"email": f"active-{idx}@example.com", "status": "active", "auth_file": str(auth_files[idx])}
+            for idx in range(3)
+        ],
+    )
+    monkeypatch.setattr(
+        "autoteam.codex_auth.check_codex_quota",
+        lambda _token: ("ok", {"primary_pct": 10, "primary_resets_at": 1234567890, "weekly_pct": 1}),
+    )
+    monkeypatch.setattr(api, "_auto_check_team_member_count", lambda: 5)
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda *args, **kwargs: None)
+    monkeypatch.setattr(api, "_start_task", fake_start_task)
+
+    stop_event = api._auto_check_stop
+    wait_calls = {"count": 0}
+
+    def fake_wait(_seconds):
+        wait_calls["count"] += 1
+        return wait_calls["count"] > 1
+
+    monkeypatch.setattr(stop_event, "wait", fake_wait)
+
+    api._auto_check_loop()
+
+    assert started == []
+
+
+def test_auto_check_logs_threshold_message_when_team_is_full_but_low_accounts_are_below_min_low(
+    tmp_path, monkeypatch, caplog
+):
+    auth_files = []
+    for idx in range(3):
+        auth_file = tmp_path / f"active-{idx}.json"
+        auth_file.write_text(json.dumps({"access_token": f"token-{idx}"}), encoding="utf-8")
+        auth_files.append(auth_file)
+
+    monkeypatch.setattr(api, "_auto_check_config", {"interval": 0, "threshold": 10, "min_low": 2})
+    monkeypatch.setattr(api, "_auto_check_stop", __import__("threading").Event())
+    monkeypatch.setattr(api, "_auto_check_restart", __import__("threading").Event())
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+    monkeypatch.setattr(
+        "autoteam.accounts.load_accounts",
+        lambda: [
+            {"email": f"active-{idx}@example.com", "status": "active", "auth_file": str(auth_files[idx])}
+            for idx in range(3)
+        ],
+    )
+
+    def fake_check_quota(token):
+        if token == "token-0":
+            return "ok", {"primary_pct": 100, "primary_resets_at": 1234567890, "weekly_pct": 1}
+        return "ok", {"primary_pct": 10, "primary_resets_at": 1234567890, "weekly_pct": 1}
+
+    monkeypatch.setattr("autoteam.codex_auth.check_codex_quota", fake_check_quota)
+    monkeypatch.setattr(api, "_auto_check_team_member_count", lambda: 5)
+    monkeypatch.setattr("autoteam.accounts.update_account", lambda *args, **kwargs: None)
+    monkeypatch.setattr(api, "_start_task", lambda *args, **kwargs: None)
+
+    stop_event = api._auto_check_stop
+    wait_calls = {"count": 0}
+
+    def fake_wait(_seconds):
+        wait_calls["count"] += 1
+        return wait_calls["count"] > 1
+
+    monkeypatch.setattr(stop_event, "wait", fake_wait)
+
+    with caplog.at_level(logging.INFO):
+        api._auto_check_loop()
+
+    assert "低额度账号未达到触发阈值（1/2），且 Team 实际成员数已满足（5/5），无需轮转" in caplog.text
+    assert "额度正常且 active 数充足（3/5），无需轮转" not in caplog.text

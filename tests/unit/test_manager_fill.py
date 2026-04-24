@@ -102,6 +102,33 @@ def test_cmd_fill_skips_google_accounts_during_auto_reuse(monkeypatch):
     assert chatgpt.stopped == 1
 
 
+def test_cmd_fill_stops_early_when_refreshed_team_count_hits_target(monkeypatch):
+    chatgpt = _FakeChatGPT()
+    count_values = iter([3, 5])
+    events = []
+
+    monkeypatch.setattr(manager, "ChatGPTTeamAPI", lambda: chatgpt)
+    monkeypatch.setattr(manager, "CloudMailClient", lambda: _FakeMailClient())
+    monkeypatch.setattr(manager, "get_team_member_count", lambda _chatgpt: next(count_values))
+    monkeypatch.setattr(manager, "get_standby_accounts", lambda: [])
+    monkeypatch.setattr(
+        manager,
+        "create_new_account",
+        lambda _chatgpt, _mail: events.append(("create", None)) or False,
+    )
+    monkeypatch.setattr(manager, "sync_to_cpa", lambda: events.append(("sync", None)))
+    monkeypatch.setattr(manager, "cmd_status", lambda: events.append(("status", None)))
+
+    manager.cmd_fill(target=5)
+
+    assert events == [
+        ("create", None),
+        ("sync", None),
+        ("status", None),
+    ]
+    assert chatgpt.stopped == 1
+
+
 def test_auto_reuse_skip_reason_detects_google_provider_and_gmail():
     assert manager._auto_reuse_skip_reason({"email": "bubblehuntr@gmail.com"}) == "Google 登录账号暂不支持自动复用"
     assert (
