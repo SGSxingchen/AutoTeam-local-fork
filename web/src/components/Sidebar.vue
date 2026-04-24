@@ -208,7 +208,7 @@ const items = [
 
 const summaryCards = computed(() => {
   const summary = props.status?.summary || {}
-  const running = props.tasks.filter(task => task.status === 'running' || task.status === 'pending').length
+  const running = props.tasks.filter(isTaskInFlight).length
   return [
     {
       label: '活跃账号',
@@ -223,8 +223,12 @@ const summaryCards = computed(() => {
     {
       label: '后台任务',
       value: running,
-      copy: running > 0 ? '有任务正在执行，发起新动作前先看状态。' : '当前没有排队任务，系统处于空闲状态。',
+      copy: running > 0 ? '有任务排队或执行中，发起新动作前先看状态。' : '当前没有排队或执行中的任务，系统处于空闲状态。',
     },
   ]
 })
+
+function isTaskInFlight(task) {
+  return task.status === 'queued' || task.status === 'running' || task.status === 'pending'
+}
 </script>

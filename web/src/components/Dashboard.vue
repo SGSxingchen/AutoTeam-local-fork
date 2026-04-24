@@ -481,6 +481,7 @@ const cards = computed(() => {
 })
 const runningTaskLabel = computed(() => {
   if (!props.runningTask) return '系统空闲，可以继续操作'
+  if (props.runningTask.status === 'queued') return '任务排队中'
   if (props.runningTask.command === 'admin-login') return '管理员登录进行中'
   if (props.runningTask.command === 'main-codex-sync') return '主号 Codex 同步中'
   return `${props.runningTask.command} 执行中`
@@ -488,6 +489,9 @@ const runningTaskLabel = computed(() => {
 const runningTaskCopy = computed(() => {
   if (!props.runningTask) {
     return '当前没有排队或执行中的后台任务，账号池操作和同步动作都会更顺手。'
+  }
+  if (props.runningTask.status === 'queued') {
+    return '当前有任务正在排队，系统会按顺序处理，先不要重复触发相同动作。'
   }
   if (props.runningTask.command === 'admin-login') {
     return '管理员登录未完成前，账号池的高风险动作会自动上锁，避免半登录状态误操作。'

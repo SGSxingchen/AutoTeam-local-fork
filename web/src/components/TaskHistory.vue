@@ -75,6 +75,7 @@ defineProps({
 function taskStatusClass(status) {
   return {
     pending: 'border-slate-500/20 bg-slate-500/10 text-slate-300',
+    queued: 'border-slate-500/20 bg-slate-500/10 text-slate-300',
     running: 'border-amber-400/20 bg-amber-500/10 text-amber-200',
     completed: 'border-emerald-400/20 bg-emerald-500/10 text-emerald-200',
     failed: 'border-rose-400/20 bg-rose-500/10 text-rose-200',
@@ -84,6 +85,7 @@ function taskStatusClass(status) {
 function taskStatusLabel(status) {
   return {
     pending: '等待中',
+    queued: '排队中',
     running: '执行中',
     completed: '已完成',
     failed: '失败',

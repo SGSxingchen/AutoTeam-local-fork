@@ -301,11 +301,12 @@ const adminPillClass = computed(() => {
 const busyLabel = computed(() => {
   if (manualAccountStatus.value?.in_progress) return 'OAuth 登录进行中'
   if (!busyTask.value) return ''
+  if (busyTask.value.status === 'queued') return '后台任务排队中'
   if (busyTask.value.command === 'admin-login') return '管理员登录进行中'
   if (busyTask.value.command === 'main-codex-sync') return '主号 Codex 同步中'
   return `${busyTask.value.command} 执行中`
 })
-const tasksInFlight = computed(() => tasks.value.filter(task => task.status === 'running' || task.status === 'pending').length)
+const tasksInFlight = computed(() => tasks.value.filter(isTaskInFlight).length)
 const overviewCards = computed(() => {
   const summary = status.value?.summary || {}
   const total = summary.total || 0
@@ -339,7 +340,7 @@ const overviewCards = computed(() => {
       value: tasksInFlight.value,
       badge: tasksInFlight.value > 0 ? '系统忙碌' : '当前空闲',
       tone: tasksInFlight.value > 0 ? 'border-violet-400/20 bg-violet-500/10 text-violet-200' : 'border-slate-500/20 bg-slate-500/10 text-slate-300',
-      copy: tasksInFlight.value > 0 ? '有任务正在执行时，前台操作会自动限流，减少冲突。' : '当前没有排队中的后台任务，可以安全发起新动作。',
+      copy: tasksInFlight.value > 0 ? '有任务排队或执行时，前台操作会自动限流，减少冲突。' : '当前没有排队或执行中的后台任务，可以安全发起新动作。',
     },
   ]
 })
@@ -348,7 +349,14 @@ const lastUpdatedLabel = computed(() => formatLastUpdated(lastUpdated.value))
 let pollTimer = null
 
 function syncRunningTask(taskList = tasks.value) {
-  runningTask.value = taskList.find(task => task.status === 'running' || task.status === 'pending') || null
+  runningTask.value =
+    taskList.find(task => task.status === 'running') ||
+    taskList.find(task => task.status === 'queued' || task.status === 'pending') ||
+    null
+}
+
+function isTaskInFlight(task) {
+  return task.status === 'queued' || task.status === 'running' || task.status === 'pending'
 }
 
 function applyAppSnapshot(snapshot) {

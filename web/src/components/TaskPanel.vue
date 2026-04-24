@@ -17,7 +17,7 @@
         ]"
       >
         <span class="h-2 w-2 rounded-full bg-current"></span>
-        {{ props.runningTask ? '后台任务进行中' : '当前空闲' }}
+        {{ taskStatusText }}
       </span>
     </div>
 
@@ -122,6 +122,12 @@ const props = defineProps({
     type: String,
     default: 'all',
   },
+})
+
+const taskStatusText = computed(() => {
+  if (!props.runningTask) return '当前空闲'
+  if (props.runningTask.status === 'queued') return '后台任务排队中'
+  return '后台任务进行中'
 })
 
 const emit = defineEmits(['task-started', 'refresh', 'accounts-synced'])
@@ -242,7 +248,7 @@ const paramHelp = computed(() => {
 })
 
 function isDisabled(action) {
-  if (props.runningTask) return true
+  if (props.runningTask && action.sync) return true
   if (!adminReady.value && !action.allowWithoutAdmin) return true
   return false
 }
