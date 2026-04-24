@@ -1417,19 +1417,30 @@ def create_new_account(chatgpt_api, mail_client):
     创建新账号。优先用直接注册模式（域名自动加入 workspace）。
     chatgpt_api 可为 None（直接注册不需要）。
     """
+    def _result_from_emails(emails, mode):
+        emails = [email for email in emails if email]
+        return {
+            "status": "completed" if emails else "failed",
+            "mode": mode,
+            "count": len(emails),
+            "emails": emails,
+            "email": emails[0] if emails else None,
+        }
+
     # 先检查 pending invites
     if chatgpt_api and chatgpt_api.browser:
         logger.info("[创建] 先检查 pending invites...")
         completed = _check_pending_invites(chatgpt_api, mail_client)
         if completed:
             logger.info("[创建] 从 pending invites 完成了 %d 个账号", len(completed))
-            return completed[0]
+            return _result_from_emails(completed, "pending_invites")
 
     # 直接注册模式（不需要邀请）
     logger.info("[创建] 使用直接注册模式...")
     if chatgpt_api and chatgpt_api.browser:
         chatgpt_api.stop()
-    return create_account_direct(mail_client)
+    email = create_account_direct(mail_client)
+    return _result_from_emails([email] if email else [], "direct_registration")
 
 
 def reinvite_account(chatgpt_api, mail_client, acc):
@@ -1812,12 +1823,25 @@ def cmd_rotate(target_seats=5):
         else:
             # 必须创建新号
             logger.info("[5/5] 创建 %d 个新账号...", remaining)
-            for i in range(remaining):
-                logger.info("[5/5] 创建第 %d/%d 个...", i + 1, remaining)
+            attempts = 0
+            created = 0
+            while current_count < TARGET and attempts < remaining:
+                logger.info("[5/5] 创建第 %d/%d 个...", attempts + 1, remaining)
                 if not chatgpt or not chatgpt.browser:
                     ensure_chatgpt()
-                if create_new_account(chatgpt, ensure_mail()):
-                    current_count += 1
+                result = create_new_account(chatgpt, ensure_mail())
+                created_count = result.get("count", 0) if isinstance(result, dict) else (1 if result else 0)
+                if created_count > 0:
+                    created += created_count
+                attempts += 1
+                if not chatgpt or not chatgpt.browser:
+                    ensure_chatgpt()
+                current_count = get_team_member_count(chatgpt)
+                if current_count < 0:
+                    logger.warning("[5/5] 创建后获取成员数失败，停止继续创建")
+                    break
+            if created:
+                logger.info("[5/5] 实际新增/恢复账号数: %d", created)
 
         if not chatgpt or not chatgpt.browser:
             ensure_chatgpt()
@@ -1846,8 +1870,12 @@ def cmd_add():
 
     try:
         result = create_new_account(chatgpt, mail_client)  # 内部会 stop chatgpt
-        if result:
-            logger.info("[添加] 新账号添加成功: %s", result)
+        if result and result.get("count", 0) > 0:
+            logger.info(
+                "[添加] 新账号添加成功: %s（%d 个）",
+                result.get("email") or "?",
+                result.get("count", 0),
+            )
             sync_to_cpa()
         else:
             logger.error("[添加] 添加失败")
@@ -2224,8 +2252,9 @@ def cmd_fill(target=5):
 
         logger.info("[填充] 需要添加 %d 个账号", need)
 
-        for i in range(need):
-            logger.info("[填充] 添加第 %d/%d 个账号...", i + 1, need)
+        attempts = 0
+        while current < target and attempts < need:
+            logger.info("[填充] 添加第 %d/%d 个账号...", attempts + 1, need)
 
             # 优先复用 standby 中额度已恢复的旧账号
             reusable = get_next_reusable_account()
@@ -2241,14 +2270,17 @@ def cmd_fill(target=5):
                 logger.info("[填充] 创建新账号...")
                 if not chatgpt.browser:
                     chatgpt.start()
-                create_new_account(chatgpt, mail_client)
+                result = create_new_account(chatgpt, mail_client)
+                if isinstance(result, dict):
+                    logger.info("[填充] 本次实际完成 %d 个账号", result.get("count", 0))
 
             # 验证成员数
+            attempts += 1
             if not chatgpt.browser:
                 chatgpt.start()
-            new_count = get_team_member_count(chatgpt)
-            if new_count >= 0:
-                logger.info("[填充] 当前成员数: %d/%d", new_count, target)
+            current = get_team_member_count(chatgpt)
+            if current >= 0:
+                logger.info("[填充] 当前成员数: %d/%d", current, target)
 
         logger.info("[填充] 填充完成")
         sync_to_cpa()

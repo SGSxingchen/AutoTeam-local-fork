@@ -146,7 +146,13 @@ def post_setup_save(config: SetupConfig):
 # 后台任务管理
 # ---------------------------------------------------------------------------
 
+import queue as _queue
+
+
 _tasks: dict[str, dict] = {}
+_tasks_lock = threading.Lock()
+_task_queue: _queue.Queue = _queue.Queue()
+_task_queue_thread: threading.Thread | None = None
 _playwright_lock = threading.Lock()
 _current_task_id: str | None = None
 _admin_login_api = None
@@ -160,8 +166,6 @@ MAX_TASK_HISTORY = 50
 # ---------------------------------------------------------------------------
 # Playwright 专用线程执行器（解决跨线程调用问题）
 # ---------------------------------------------------------------------------
-
-import queue as _queue
 
 
 class _PlaywrightExecutor:
@@ -210,6 +214,62 @@ class _PlaywrightExecutor:
 _pw_executor = _PlaywrightExecutor()
 
 
+def _refresh_queue_positions_locked():
+    queued_tasks = sorted(
+        (task for task in _tasks.values() if task["status"] == "queued"),
+        key=lambda task: task["created_at"],
+    )
+    for idx, task in enumerate(queued_tasks, 1):
+        task["queue_position"] = idx
+
+    for task in _tasks.values():
+        if task["status"] != "queued":
+            task["queue_position"] = None
+
+
+def _queued_task_detail_locked():
+    queued_tasks = sorted(
+        (task for task in _tasks.values() if task["status"] == "queued"),
+        key=lambda task: task["created_at"],
+    )
+    if not queued_tasks:
+        return None
+
+    queued = queued_tasks[0]
+    return {
+        "task_id": queued["task_id"],
+        "command": queued.get("command", "unknown"),
+        "started_at": queued.get("started_at"),
+        "created_at": queued.get("created_at"),
+        "status": queued.get("status"),
+        "queue_position": queued.get("queue_position"),
+    }
+
+
+def _has_background_tasks():
+    with _tasks_lock:
+        return any(task["status"] in ("queued", "running") for task in _tasks.values())
+
+
+def _ensure_task_worker_started():
+    global _task_queue_thread
+    if _task_queue_thread is None or not _task_queue_thread.is_alive():
+        _task_queue_thread = threading.Thread(target=_task_worker_loop, daemon=True)
+        _task_queue_thread.start()
+
+
+def _acquire_foreground_playwright_lock(default_message: str):
+    has_background_tasks = False
+    lock_acquired = False
+    with _tasks_lock:
+        has_background_tasks = any(task["status"] in ("queued", "running") for task in _tasks.values())
+        if not has_background_tasks:
+            lock_acquired = _playwright_lock.acquire(blocking=False)
+
+    if has_background_tasks or not lock_acquired:
+        raise HTTPException(status_code=409, detail=_current_busy_detail(default_message))
+
+
 def _current_busy_detail(default_message: str):
     if _admin_login_api:
         return {
@@ -231,14 +291,29 @@ def _current_busy_detail(default_message: str):
             },
         }
 
-    running = _tasks.get(_current_task_id, {})
+    with _tasks_lock:
+        running = _tasks.get(_current_task_id, {})
+        if _current_task_id and running:
+            return {
+                "message": default_message,
+                "running_task": {
+                    "task_id": _current_task_id,
+                    "command": running.get("command", "unknown"),
+                    "started_at": running.get("started_at"),
+                    "status": running.get("status"),
+                },
+            }
+
+        queued = _queued_task_detail_locked()
+        if queued:
+            return {
+                "message": default_message,
+                "running_task": queued,
+            }
+
     return {
         "message": default_message,
-        "running_task": {
-            "task_id": _current_task_id,
-            "command": running.get("command", "unknown"),
-            "started_at": running.get("started_at"),
-        },
+        "running_task": None,
     }
 
 
@@ -248,57 +323,87 @@ def _prune_tasks():
         return
     sorted_ids = sorted(_tasks, key=lambda k: _tasks[k]["created_at"])
     for tid in sorted_ids[: len(_tasks) - MAX_TASK_HISTORY]:
-        if _tasks[tid]["status"] in ("completed", "failed"):
+        if _tasks[tid]["status"] in ("completed", "failed", "cancelled"):
             del _tasks[tid]
 
 
 def _run_task(task_id: str, func, *args, **kwargs):
     """在后台线程中执行任务"""
     global _current_task_id
-    task = _tasks[task_id]
 
     _playwright_lock.acquire()
-    _current_task_id = task_id
-    task["status"] = "running"
-    task["started_at"] = time.time()
+    with _tasks_lock:
+        task = _tasks.get(task_id)
+        if not task:
+            _playwright_lock.release()
+            return
+        _current_task_id = task_id
+        task["status"] = "running"
+        task["started_at"] = time.time()
+        task["queue_position"] = None
+        _refresh_queue_positions_locked()
 
     try:
         result = func(*args, **kwargs)
-        task["status"] = "completed"
-        task["result"] = result
+        with _tasks_lock:
+            task = _tasks.get(task_id)
+            if task:
+                task["status"] = "completed"
+                task["result"] = result
     except Exception as e:
-        task["status"] = "failed"
-        task["error"] = str(e)
+        with _tasks_lock:
+            task = _tasks.get(task_id)
+            if task:
+                task["status"] = "failed"
+                task["error"] = str(e)
         logger.error("[API] 任务 %s 失败: %s", task_id[:8], e)
     finally:
-        task["finished_at"] = time.time()
-        _current_task_id = None
+        with _tasks_lock:
+            task = _tasks.get(task_id)
+            if task:
+                task["finished_at"] = time.time()
+            _current_task_id = None
+            _refresh_queue_positions_locked()
         _playwright_lock.release()
 
 
+def _task_worker_loop():
+    while True:
+        item = _task_queue.get()
+        if item is None:
+            break
+        task_id, func, args, kwargs = item
+        try:
+            _run_task(task_id, func, *args, **kwargs)
+        finally:
+            _task_queue.task_done()
+
+
 def _start_task(command: str, func, params: dict, *args, **kwargs) -> dict:
-    """创建并启动后台任务，返回任务信息"""
-    if not _playwright_lock.acquire(blocking=False):
+    """创建并入队后台任务，返回任务信息"""
+    if _admin_login_api or _main_codex_flow:
         raise HTTPException(status_code=409, detail=_current_busy_detail("有任务正在执行，请等待完成后再试"))
-    _playwright_lock.release()
 
     task_id = uuid.uuid4().hex[:12]
-    task = {
-        "task_id": task_id,
-        "command": command,
-        "params": params,
-        "status": "pending",
-        "created_at": time.time(),
-        "started_at": None,
-        "finished_at": None,
-        "result": None,
-        "error": None,
-    }
-    _tasks[task_id] = task
-    _prune_tasks()
+    with _tasks_lock:
+        task = {
+            "task_id": task_id,
+            "command": command,
+            "params": params,
+            "status": "queued",
+            "created_at": time.time(),
+            "started_at": None,
+            "finished_at": None,
+            "result": None,
+            "error": None,
+            "queue_position": None,
+        }
+        _tasks[task_id] = task
+        _prune_tasks()
+        _refresh_queue_positions_locked()
 
-    thread = threading.Thread(target=_run_task, args=(task_id, func, *args), kwargs=kwargs, daemon=True)
-    thread.start()
+    _ensure_task_worker_started()
+    _task_queue.put((task_id, func, args, kwargs))
 
     return task
 
@@ -531,10 +636,7 @@ def post_admin_login_start(params: AdminEmailParams):
         if _playwright_lock.locked():
             _playwright_lock.release()
 
-    if not _playwright_lock.acquire(blocking=False):
-        raise HTTPException(
-            status_code=409, detail=_current_busy_detail("有任务正在执行，请等待完成后再进行管理员登录")
-        )
+    _acquire_foreground_playwright_lock("有任务正在排队或执行，请等待完成后再进行管理员登录")
 
     try:
         from autoteam.chatgpt_api import ChatGPTTeamAPI
@@ -574,11 +676,7 @@ def post_admin_login_session(params: AdminSessionParams):
     if _admin_login_api:
         post_admin_login_cancel()
 
-    if not _playwright_lock.acquire(blocking=False):
-        raise HTTPException(
-            status_code=409,
-            detail=_current_busy_detail("有任务正在执行，请等待完成后再导入管理员 session_token"),
-        )
+    _acquire_foreground_playwright_lock("有任务正在排队或执行，请等待完成后再导入管理员 session_token")
 
     try:
         from autoteam.chatgpt_api import ChatGPTTeamAPI
@@ -771,10 +869,7 @@ def post_main_codex_start():
             "info": {"auth_file": saved_auth_file},
         }
 
-    if not _playwright_lock.acquire(blocking=False):
-        raise HTTPException(
-            status_code=409, detail=_current_busy_detail("有任务正在执行，请等待完成后再同步主号 Codex")
-        )
+    _acquire_foreground_playwright_lock("有任务正在排队或执行，请等待完成后再同步主号 Codex")
 
     try:
         from autoteam.codex_auth import MainCodexSyncFlow
@@ -1007,19 +1102,7 @@ def get_standby():
 @app.delete("/api/accounts/{email}")
 def delete_account(email: str):
     """删除本地管理账号及其关联资源。"""
-    if not _playwright_lock.acquire(blocking=False):
-        running = _tasks.get(_current_task_id, {})
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "有任务正在执行，请等待完成后再删除账号",
-                "running_task": {
-                    "task_id": _current_task_id,
-                    "command": running.get("command", "unknown"),
-                    "started_at": running.get("started_at"),
-                },
-            },
-        )
+    _acquire_foreground_playwright_lock("有任务正在排队或执行，请等待完成后再删除账号")
 
     try:
         from autoteam.account_ops import delete_managed_account
@@ -1045,8 +1128,7 @@ def delete_account(email: str):
 @app.post("/api/accounts/{email}/kick")
 def post_kick_account(email: str):
     """将账号从 Team 中移出，状态变为 standby"""
-    if not _playwright_lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail=_current_busy_detail("有任务正在执行，请等待完成后再操作"))
+    _acquire_foreground_playwright_lock("有任务正在排队或执行，请等待完成后再操作")
 
     try:
         from autoteam.accounts import find_account, load_accounts, update_account
@@ -1145,7 +1227,7 @@ def post_account_login(params: LoginAccountParams):
 @app.get("/api/status")
 def get_status():
     """获取所有账号状态 + active 账号实时额度"""
-    from autoteam.accounts import STATUS_ACTIVE, STATUS_EXHAUSTED, STATUS_PENDING, STATUS_STANDBY, load_accounts
+    from autoteam.accounts import STATUS_ACTIVE, load_accounts
     from autoteam.codex_auth import check_codex_quota, quota_result_quota_info
 
     accounts = load_accounts()
@@ -1199,17 +1281,21 @@ def post_sync_accounts():
     """从 auths 目录和 Team 成员同步账号到 accounts.json"""
     from autoteam.manager import sync_account_states
 
-    sync_account_states()
-    from autoteam.accounts import load_accounts
+    _acquire_foreground_playwright_lock("有任务正在排队或执行，请等待完成后再同步账号")
+    try:
+        sync_account_states()
+        from autoteam.accounts import load_accounts
 
-    accounts = load_accounts()
-    summary = _account_summary(accounts)
-    return {
-        "message": f"\u540c\u6b65\u5b8c\u6210\uff0c\u5171 {len(accounts)} \u4e2a\u8d26\u53f7",
-        "total": len(accounts),
-        "accounts": [_sanitize_account(a) for a in accounts],
-        "summary": summary,
-    }
+        accounts = load_accounts()
+        summary = _account_summary(accounts)
+        return {
+            "message": f"\u540c\u6b65\u5b8c\u6210\uff0c\u5171 {len(accounts)} \u4e2a\u8d26\u53f7",
+            "total": len(accounts),
+            "accounts": [_sanitize_account(a) for a in accounts],
+            "summary": summary,
+        }
+    finally:
+        _playwright_lock.release()
 
 
 @app.get("/api/team/members")
@@ -1220,8 +1306,7 @@ def get_team_members():
     if not get_admin_session_token() or not get_chatgpt_account_id():
         raise HTTPException(status_code=400, detail="请先完成管理员登录")
 
-    if not _playwright_lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail=_current_busy_detail("有任务正在执行，请等待完成后再查询"))
+    _acquire_foreground_playwright_lock("有任务正在排队或执行，请等待完成后再查询")
 
     try:
         from autoteam.chatgpt_api import ChatGPTTeamAPI
@@ -1273,8 +1358,7 @@ def post_team_member_remove(params: TeamMemberRemoveParams):
     if not get_admin_session_token() or not get_chatgpt_account_id():
         raise HTTPException(status_code=400, detail="请先完成管理员登录")
 
-    if not _playwright_lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail=_current_busy_detail("有任务正在执行，请等待完成后再操作"))
+    _acquire_foreground_playwright_lock("有任务正在排队或执行，请等待完成后再操作")
 
     try:
         from autoteam.accounts import find_account, load_accounts, update_account
@@ -1430,14 +1514,16 @@ def post_cleanup(params: CleanupParams = CleanupParams()):
 @app.get("/api/tasks")
 def get_tasks():
     """查看所有任务"""
-    sorted_tasks = sorted(_tasks.values(), key=lambda t: t["created_at"], reverse=True)
+    with _tasks_lock:
+        sorted_tasks = sorted((dict(task) for task in _tasks.values()), key=lambda t: t["created_at"], reverse=True)
     return sorted_tasks
 
 
 @app.get("/api/tasks/{task_id}")
 def get_task(task_id: str):
     """查看任务状态"""
-    task = _tasks.get(task_id)
+    with _tasks_lock:
+        task = dict(_tasks[task_id]) if task_id in _tasks else None
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     return task
@@ -1523,9 +1609,15 @@ def _auto_check_loop():
                 )
 
             if len(low_accounts) >= cfg["min_low"]:
-                # 检查是否有任务在跑
+                # 显式队列模式下，已有后台任务时不再继续堆积自动轮转
+                if _has_background_tasks():
+                    logger.info("[巡检] 已有后台任务排队或执行，跳过本轮自动轮转")
+                    continue
+                if _admin_login_api or _main_codex_flow:
+                    logger.info("[巡检] 当前存在交互式登录流程，跳过本轮自动轮转")
+                    continue
                 if not _playwright_lock.acquire(blocking=False):
-                    logger.info("[巡检] 有任务正在执行，跳过本轮自动轮转")
+                    logger.info("[巡检] Playwright 正忙，跳过本轮自动轮转")
                     continue
                 _playwright_lock.release()
 
@@ -1595,7 +1687,13 @@ def _start_auto_check():
 
 @app.on_event("shutdown")
 def _stop_auto_check():
+    global _task_queue_thread
     _auto_check_stop.set()
+    if _task_queue_thread and _task_queue_thread.is_alive():
+        _task_queue.put(None)
+        _task_queue_thread.join(timeout=5)
+        _task_queue_thread = None
+    _pw_executor.stop()
 
 
 # ---------------------------------------------------------------------------

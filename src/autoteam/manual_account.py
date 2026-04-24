@@ -260,6 +260,7 @@ class ManualAccountFlow:
                 update_fields["quota_exhausted_at"] = time.time()
                 update_fields["quota_resets_at"] = quota_result_resets_at(quota_info) or int(time.time() + 18000)
 
+        final_status = update_fields["status"]
         update_account(email, **update_fields)
         sync_to_cpa()
 
@@ -269,7 +270,7 @@ class ManualAccountFlow:
             "account": {
                 "email": email,
                 "plan_type": plan_type,
-                "status": account_status,
+                "status": final_status,
                 "auth_file": auth_file,
             },
         }
