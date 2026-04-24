@@ -34,7 +34,6 @@ from autoteam.accounts import (
     STATUS_STANDBY,
     add_account,
     find_account,
-    get_next_reusable_account,
     get_standby_accounts,
     load_accounts,
     save_accounts,
@@ -54,7 +53,6 @@ from autoteam.codex_auth import (
     quota_result_quota_info,
     quota_result_resets_at,
     refresh_access_token,
-    refresh_main_auth_file,
     save_auth_file,
 )
 from autoteam.cpa_sync import sync_from_cpa, sync_main_codex_to_cpa, sync_to_cpa
@@ -64,6 +62,7 @@ from autoteam.textio import read_text, write_text
 logger = logging.getLogger(__name__)
 
 MAIL_TIMEOUT = int(os.environ.get("MAIL_TIMEOUT", "180"))
+REUSE_RESET_GRACE_SECONDS = int(os.environ.get("REUSE_RESET_GRACE_SECONDS", "300"))
 
 
 def _normalized_email(value: str | None) -> str:
@@ -72,6 +71,30 @@ def _normalized_email(value: str | None) -> str:
 
 def _is_main_account_email(email: str | None) -> bool:
     return bool(_normalized_email(email)) and _normalized_email(email) == _normalized_email(get_admin_email())
+
+
+_GOOGLE_AUTO_REUSE_DOMAINS = {"gmail.com", "googlemail.com"}
+
+
+def _get_account_login_provider(acc: dict | None) -> str:
+    acc = acc or {}
+    for key in ("login_provider", "auth_provider", "oauth_provider"):
+        provider = (acc.get(key) or "").strip().lower()
+        if provider:
+            return provider
+
+    email = _normalized_email(acc.get("email"))
+    if "@" in email and email.rsplit("@", 1)[-1] in _GOOGLE_AUTO_REUSE_DOMAINS:
+        return "google"
+
+    return ""
+
+
+def _auto_reuse_skip_reason(acc: dict | None) -> str | None:
+    provider = _get_account_login_provider(acc)
+    if provider == "google":
+        return "Google 登录账号暂不支持自动复用"
+    return None
 
 
 def sync_account_states(chatgpt_api=None):
@@ -498,10 +521,11 @@ def cmd_check():
                 # token 失效，先看历史额度（重置时间已过的不算）
                 lq = acc.get("last_quota")
                 if lq:
-                    exhausted_info = get_quota_exhausted_info(lq)
+                    exhausted_info = _pending_historical_exhausted_info(lq)
                     if exhausted_info:
                         resets_at = quota_result_resets_at(exhausted_info) or int(time.time() + 18000)
-                        logger.warning("[%s] token 失效，但历史额度显示已用完，直接标记 exhausted", email)
+                        window_label = _quota_window_label(exhausted_info.get("window"))
+                        logger.warning("[%s] token 失效，但历史%s额度未恢复，直接标记 exhausted", email, window_label)
                         update_account(
                             email,
                             status=STATUS_EXHAUSTED,
@@ -786,6 +810,75 @@ def _page_excerpt(page, limit=240):
         return page.locator("body").inner_text(timeout=1500)[:limit].replace("\n", " ")
     except Exception:
         return ""
+
+
+def _quota_window_label(window: str | None) -> str:
+    if window == "weekly":
+        return "周"
+    if window == "combined":
+        return "5h和周"
+    if window == "primary":
+        return "5h"
+    return "额度"
+
+
+def _pending_historical_exhausted_info(quota_info, now=None):
+    """仅当历史额度快照对应的耗尽窗口尚未重置时，才返回耗尽详情。"""
+    exhausted_info = get_quota_exhausted_info(quota_info)
+    if not exhausted_info:
+        return None
+
+    current_ts = time.time() if now is None else now
+    resets_at = quota_result_resets_at(exhausted_info)
+    if resets_at and current_ts >= resets_at:
+        return None
+
+    return exhausted_info
+
+
+def _standby_reuse_hold_info(acc, now=None, grace_seconds=None):
+    """返回 standby 账号在何时之前都不应复用。
+
+    优先使用账号被标记 exhausted 时保存下来的 quota_resets_at，
+    避免仅凭 last_quota.primary_resets_at 误判 5h 已恢复。
+    """
+    current_ts = time.time() if now is None else now
+    grace = REUSE_RESET_GRACE_SECONDS if grace_seconds is None else grace_seconds
+
+    saved_resets_at = 0
+    try:
+        saved_resets_at = int(acc.get("quota_resets_at") or 0)
+    except Exception:
+        saved_resets_at = 0
+
+    if saved_resets_at:
+        hold_until = saved_resets_at + grace
+        if current_ts < hold_until:
+            window = (acc.get("quota_window") or "").strip()
+            if not window:
+                exhausted_info = get_quota_exhausted_info(acc.get("last_quota"))
+                if exhausted_info:
+                    window = exhausted_info.get("window") or ""
+            return {
+                "resets_at": saved_resets_at,
+                "hold_until": hold_until,
+                "window": window,
+                "source": "saved",
+            }
+
+    exhausted_info = get_quota_exhausted_info(acc.get("last_quota"))
+    if exhausted_info:
+        resets_at = quota_result_resets_at(exhausted_info)
+        hold_until = resets_at + grace if resets_at else 0
+        if hold_until and current_ts < hold_until:
+            return {
+                "resets_at": resets_at,
+                "hold_until": hold_until,
+                "window": exhausted_info.get("window") or "",
+                "source": "history",
+            }
+
+    return None
 
 
 def _first_visible_editable_locator(page, selectors, timeout=800):
@@ -1301,18 +1394,14 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
             code_input = None
 
         if code_input:
-            import re
-
             logger.info("[直接注册] 等待验证码...")
             verification_code = None
             start_t = time.time()
             while time.time() - start_t < MAIL_TIMEOUT:
                 emails = mail_client.search_emails_by_recipient(email, size=10, account_id=cloudmail_account_id)
                 for em in emails:
-                    text = em.get("text", "") or em.get("content", "")
-                    match = re.search(r"\b(\d{6})\b", text)
-                    if match:
-                        verification_code = match.group(1)
+                    verification_code = mail_client.extract_verification_code(em)
+                    if verification_code:
                         break
                 if verification_code:
                     break
@@ -1417,6 +1506,7 @@ def create_new_account(chatgpt_api, mail_client):
     创建新账号。优先用直接注册模式（域名自动加入 workspace）。
     chatgpt_api 可为 None（直接注册不需要）。
     """
+
     def _result_from_emails(emails, mode):
         emails = [email for email in emails if email]
         return {
@@ -1445,158 +1535,33 @@ def create_new_account(chatgpt_api, mail_client):
 
 def reinvite_account(chatgpt_api, mail_client, acc):
     """
-    恢复 standby 账号 — 直接登录（域名自动加入 workspace，不需要邀请）。
-    登录后自动回到 workspace，然后刷新 Codex token。
+    恢复 standby 账号 — 复用统一的 Codex OAuth 登录流程。
+    只有拿到 team plan 的认证结果，才视为恢复成功。
     """
-    from playwright.sync_api import sync_playwright
-
-    from autoteam.invite import screenshot
-
     email = acc["email"]
     password = acc.get("password", "")
 
-    logger.info("[轮转] 恢复旧账号: %s（直接登录）", email)
+    logger.info("[轮转] 恢复旧账号: %s（统一 OAuth 登录）", email)
 
     # 关闭 ChatGPT API 浏览器避免冲突
     if chatgpt_api and chatgpt_api.browser:
         chatgpt_api.stop()
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(**chromium_launch_kwargs())
-        context = browser.new_context(**browser_context_kwargs())
-        page = context.new_page()
-
-        # 直接去登录页
-        page.goto("https://chatgpt.com/auth/login", wait_until="domcontentloaded", timeout=60000)
-        time.sleep(5)
-
-        # Cloudflare
-        for _i in range(12):
-            html = page.content()[:2000].lower()
-            if "verify you are human" not in html and "challenge" not in page.url:
-                break
-            time.sleep(5)
-
-        # 点登录
-        try:
-            login_btn = page.locator('button:has-text("登录"), button:has-text("Log in")').first
-            if login_btn.is_visible(timeout=5000):
-                login_btn.click()
-                time.sleep(3)
-        except Exception:
-            pass
-
-        # 输入邮箱
-        email_input = page.locator('input[name="email"], input[type="email"]').first
-        try:
-            if email_input.is_visible(timeout=5000):
-                email_input.fill(email)
-                time.sleep(0.5)
-                page.locator(
-                    'button:has-text("Continue"), button:has-text("继续"), button[type="submit"]'
-                ).first.click()
-                time.sleep(3)
-        except Exception:
-            pass
-
-        # 输入密码 / 点击一次性验证码登录
-        pwd_input = page.locator('input[type="password"]').first
-        try:
-            if pwd_input.is_visible(timeout=5000):
-                if password:
-                    pwd_input.fill(password)
-                    time.sleep(0.5)
-                    page.locator(
-                        'button:has-text("Continue"), button:has-text("继续"), button[type="submit"]'
-                    ).first.click()
-                else:
-                    otp_btn = page.locator(
-                        'button:has-text("一次性验证码"), button:has-text("one-time"), button:has-text("email login")'
-                    ).first
-                    if otp_btn.is_visible(timeout=3000):
-                        logger.info("[轮转] 无密码，点击一次性验证码登录")
-                        otp_btn.click()
-                    else:
-                        page.locator(
-                            'button:has-text("Continue"), button:has-text("继续"), button[type="submit"]'
-                        ).first.click()
-                time.sleep(8)
-        except Exception:
-            pass
-
-        # 可能需要邮箱验证码
-        code_input = None
-        try:
-            code_input = page.locator('input[name="code"], input[placeholder*="验证码"]').first
-            if not code_input.is_visible(timeout=5000):
-                code_input = None
-        except Exception:
-            code_input = None
-
-        if code_input and mail_client:
-            import re
-
-            logger.info("[轮转] 等待登录验证码...")
-            otp = None
-            start_t = time.time()
-            while time.time() - start_t < 120:
-                emails = mail_client.search_emails_by_recipient(email, size=10)
-                for em in emails:
-                    subj = em.get("subject", "").lower()
-                    if "invited" in subj:
-                        continue
-                    text = em.get("text", "") or em.get("content", "")
-                    match = re.search(r"\b(\d{6})\b", text)
-                    if match:
-                        otp = match.group(1)
-                        break
-                if otp:
-                    break
-                time.sleep(3)
-            if otp:
-                logger.info("[轮转] 输入验证码: %s", otp)
-                code_input.fill(otp)
-                time.sleep(0.5)
-                page.locator(
-                    'button:has-text("Continue"), button:has-text("继续"), button[type="submit"]'
-                ).first.click()
-                time.sleep(5)
-
-        screenshot(page, "reinvite_final.png")
-        logger.info("[轮转] 当前 URL: %s", page.url)
-        browser.close()
-
-    if not _is_email_in_team(email):
-        logger.warning("[轮转] 旧账号登录后仍未进入 Team，恢复失败: %s", email)
+    bundle = login_codex_via_browser(email, password, mail_client=mail_client)
+    if not bundle:
+        logger.warning("[轮转] 旧账号 OAuth 登录失败，保持 standby: %s", email)
         update_account(email, status=STATUS_STANDBY)
         return False
 
-    # 更新状态
-    update_account(email, status=STATUS_ACTIVE, last_active_at=time.time())
+    plan_type = (bundle.get("plan_type") or "").lower()
+    if plan_type != "team":
+        logger.warning("[轮转] 旧账号登录后 plan=%s，不是 team，恢复失败: %s", plan_type or "unknown", email)
+        update_account(email, status=STATUS_STANDBY)
+        return False
 
-    # 刷新 Codex token
-    bundle = login_codex_via_browser(email, password, mail_client=mail_client)
-    if bundle:
-        auth_file = save_auth_file(bundle)
-        update_account(email, auth_file=auth_file)
-        logger.info("[轮转] 旧账号已恢复: %s", email)
-    else:
-        # 尝试用已有的 refresh_token
-        auth_file = acc.get("auth_file")
-        if auth_file and Path(auth_file).exists():
-            auth_data = json.loads(read_text(Path(auth_file)))
-            rt = auth_data.get("refresh_token")
-            if rt:
-                new_tokens = refresh_access_token(rt)
-                if new_tokens:
-                    auth_data["access_token"] = new_tokens["access_token"]
-                    auth_data["refresh_token"] = new_tokens.get("refresh_token", rt)
-                    auth_data["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                    write_text(Path(auth_file), json.dumps(auth_data, indent=2))
-                    logger.info("[轮转] 旧账号已恢复（token 已刷新）: %s", email)
-                    return True
-        logger.warning("[轮转] 旧账号已登录但 Codex token 刷新失败: %s", email)
-
+    auth_file = save_auth_file(bundle)
+    update_account(email, status=STATUS_ACTIVE, last_active_at=time.time(), auth_file=auth_file)
+    logger.info("[轮转] 旧账号已恢复: %s", email)
     return True
 
 
@@ -1638,6 +1603,15 @@ def cmd_rotate(target_seats=5):
             mail_client = CloudMailClient()
             mail_client.login()
         return mail_client
+
+    def refresh_current_count(current_count, stage_label):
+        if not chatgpt or not chatgpt.browser:
+            ensure_chatgpt()
+        latest_count = get_team_member_count(chatgpt)
+        if latest_count >= 0:
+            logger.info("%s 实时成员数: %d/%d", stage_label, latest_count, TARGET)
+            return latest_count
+        return current_count
 
     logger.info("[1/5] 同步 Team 状态...")
     sync_account_states()
@@ -1734,13 +1708,20 @@ def cmd_rotate(target_seats=5):
         # 优先复用旧账号（先验证额度是否真的恢复了）
         filled = 0
         standby_list = [a for a in get_standby_accounts() if not _is_main_account_email(a.get("email"))]
-        skipped = []
+        quota_skipped = []
+        auto_reuse_skipped = []
 
         for acc in standby_list:
             if filled >= vacancies:
                 break
             email = acc["email"]
             auth_file = acc.get("auth_file")
+
+            skip_reason = _auto_reuse_skip_reason(acc)
+            if skip_reason:
+                logger.info("[4/5] 跳过 %s（%s）", email, skip_reason)
+                auto_reuse_skipped.append(acc)
+                continue
 
             # 验证额度是否真的恢复了
             quota_ok = False
@@ -1755,35 +1736,30 @@ def cmd_rotate(target_seats=5):
                             if quota_info:
                                 update_account(email, last_quota=quota_info)
                             logger.info("[4/5] 跳过 %s（额度未恢复）", email)
-                            skipped.append(acc)
+                            quota_skipped.append(acc)
                             continue
                         if status_str == "ok" and isinstance(info, dict):
                             p_remain = 100 - info.get("primary_pct", 0)
                             if p_remain < threshold:
                                 logger.info("[4/5] 跳过 %s（剩余 %d%% < %d%%）", email, p_remain, threshold)
-                                skipped.append(acc)
+                                quota_skipped.append(acc)
                                 continue
                             quota_ok = True
-                        # auth_error: token 失效，用 last_quota 判断（但重置时间已过的不算）
                         if status_str == "auth_error":
-                            lq = acc.get("last_quota")
-                            if lq:
-                                p_resets = lq.get("primary_resets_at", 0)
-                                if p_resets and time.time() >= p_resets:
-                                    logger.info("[4/5] %s 的 5h 重置时间已过，视为额度已恢复", email)
-                                    quota_ok = True
-                                else:
-                                    p_remain = 100 - lq.get("primary_pct", 0)
-                                    if p_remain < threshold:
-                                        logger.info("[4/5] 跳过 %s（上次额度 %d%% < %d%%）", email, p_remain, threshold)
-                                        skipped.append(acc)
-                                        continue
-                                    quota_ok = True
+                            logger.info("[4/5] %s 的认证已失效，改用保存的额度信息判断是否可复用", email)
                 except Exception:
                     pass
 
             # 没有认证文件或无法查询额度时，用 last_quota / quota_resets_at 兜底
             if not quota_ok:
+                hold_info = _standby_reuse_hold_info(acc)
+                if hold_info:
+                    window_label = _quota_window_label(hold_info.get("window"))
+                    mins = max(0, int((hold_info["hold_until"] - time.time()) / 60))
+                    logger.info("[4/5] 跳过 %s（保存的%s恢复时间未到，还需约 %d 分钟）", email, window_label, mins)
+                    quota_skipped.append(acc)
+                    continue
+
                 lq = acc.get("last_quota")
                 if lq:
                     p_resets = lq.get("primary_resets_at", 0)
@@ -1794,28 +1770,26 @@ def cmd_rotate(target_seats=5):
                         p_remain = 100 - lq.get("primary_pct", 0)
                         if p_remain < threshold:
                             logger.info("[4/5] 跳过 %s（历史额度 %d%% < %d%%）", email, p_remain, threshold)
-                            skipped.append(acc)
+                            quota_skipped.append(acc)
                             continue
-                else:
-                    # 没有 last_quota，看 quota_resets_at 是否已过
-                    resets_at = acc.get("quota_resets_at")
-                    if resets_at and time.time() < resets_at:
-                        mins = max(0, int((resets_at - time.time()) / 60))
-                        logger.info("[4/5] 跳过 %s（%d 分钟后恢复）", email, mins)
-                        skipped.append(acc)
-                        continue
-
             logger.info("[4/5] 复用: %s", email)
             if not chatgpt or not chatgpt.browser:
                 ensure_chatgpt()
-            if reinvite_account(chatgpt, ensure_mail(), acc):
+            reused = reinvite_account(chatgpt, ensure_mail(), acc)
+            if reused:
                 filled += 1
                 current_count += 1
-            else:
-                skipped.append(acc)
+            current_count = refresh_current_count(current_count, "[4/5]")
+            if current_count >= TARGET:
+                logger.info("[4/5] 当前成员数已达到目标，停止继续补位")
+                break
+            if not reused:
+                quota_skipped.append(acc)
 
-        if skipped:
-            logger.info("[4/5] 跳过 %d 个额度未恢复的旧号", len(skipped))
+        if quota_skipped:
+            logger.info("[4/5] 跳过 %d 个额度未恢复或复用失败的旧号", len(quota_skipped))
+        if auto_reuse_skipped:
+            logger.info("[4/5] 跳过 %d 个暂不支持自动复用的旧号", len(auto_reuse_skipped))
 
         remaining = TARGET - current_count
         if remaining <= 0:
@@ -1834,11 +1808,9 @@ def cmd_rotate(target_seats=5):
                 if created_count > 0:
                     created += created_count
                 attempts += 1
-                if not chatgpt or not chatgpt.browser:
-                    ensure_chatgpt()
-                current_count = get_team_member_count(chatgpt)
-                if current_count < 0:
-                    logger.warning("[5/5] 创建后获取成员数失败，停止继续创建")
+                current_count = refresh_current_count(current_count, "[5/5]")
+                if current_count >= TARGET:
+                    logger.info("[5/5] 当前成员数已达到目标，停止继续创建")
                     break
             if created:
                 logger.info("[5/5] 实际新增/恢复账号数: %d", created)
@@ -1918,16 +1890,6 @@ def cmd_manual_add():
         flow.stop()
 
 
-def _refresh_main_auth_after_admin_login():
-    try:
-        info = refresh_main_auth_file()
-        logger.info("[管理员登录] 已保存主号认证文件: %s", info.get("auth_file"))
-        return info
-    except Exception as exc:
-        logger.warning("[管理员登录] 主号认证文件生成失败: %s", exc)
-        return None
-
-
 def cmd_admin_login(email=None):
     """交互式完成管理员登录并保存到 state.json。"""
     email = (email or "").strip()
@@ -1949,7 +1911,6 @@ def cmd_admin_login(email=None):
             if step == "completed":
                 info = chatgpt.complete_admin_login()
                 chatgpt.stop()
-                _refresh_main_auth_after_admin_login()
                 logger.info("[管理员登录] 登录完成: %s", info.get("email") or email)
                 if info.get("account_id"):
                     logger.info("[管理员登录] Workspace ID: %s", info["account_id"])
@@ -2030,7 +1991,6 @@ def cmd_admin_session(email=None):
         logger.info("[管理员登录] 开始导入 session_token: %s", email)
         info = chatgpt.import_admin_session(email, session_token)
         chatgpt.stop()
-        _refresh_main_auth_after_admin_login()
         logger.info("[管理员登录] session_token 导入完成: %s", info.get("email") or email)
         if info.get("account_id"):
             logger.info("[管理员登录] Workspace ID: %s", info["account_id"])
@@ -2251,36 +2211,62 @@ def cmd_fill(target=5):
             return
 
         logger.info("[填充] 需要添加 %d 个账号", need)
+        standby_list = [
+            a
+            for a in get_standby_accounts()
+            if a.get("_quota_recovered") and not _is_main_account_email(a.get("email"))
+        ]
+        standby_index = 0
 
         attempts = 0
         while current < target and attempts < need:
             logger.info("[填充] 添加第 %d/%d 个账号...", attempts + 1, need)
 
             # 优先复用 standby 中额度已恢复的旧账号
-            reusable = get_next_reusable_account()
-            if reusable and reusable.get("_quota_recovered"):
+            added = False
+            while standby_index < len(standby_list):
+                reusable = standby_list[standby_index]
+                standby_index += 1
                 email = reusable["email"]
+                skip_reason = _auto_reuse_skip_reason(reusable)
+                if skip_reason:
+                    logger.info("[填充] 跳过旧账号: %s（%s）", email, skip_reason)
+                    continue
                 logger.info("[填充] 复用旧账号: %s", email)
                 # 确保 chatgpt 浏览器可用
                 if not chatgpt.browser:
                     chatgpt.start()
-                reinvite_account(chatgpt, mail_client, reusable)
-            else:
+                added = reinvite_account(chatgpt, mail_client, reusable)
+                if added:
+                    break
+                logger.warning("[填充] 复用旧账号失败，尝试下一个旧账号: %s", email)
+
+            if not added:
                 # 创建新账号
                 logger.info("[填充] 创建新账号...")
                 if not chatgpt.browser:
                     chatgpt.start()
                 result = create_new_account(chatgpt, mail_client)
                 if isinstance(result, dict):
+                    added = result.get("count", 0) > 0
                     logger.info("[填充] 本次实际完成 %d 个账号", result.get("count", 0))
+                else:
+                    added = bool(result)
+
+            if not added:
+                logger.warning("[填充] 本轮补位失败，第 %d/%d 个空缺仍未填上", attempts + 1, need)
 
             # 验证成员数
             attempts += 1
             if not chatgpt.browser:
                 chatgpt.start()
-            current = get_team_member_count(chatgpt)
-            if current >= 0:
-                logger.info("[填充] 当前成员数: %d/%d", current, target)
+            new_count = get_team_member_count(chatgpt)
+            if new_count >= 0:
+                logger.info("[填充] 当前成员数: %d/%d", new_count, target)
+                current = new_count
+                if new_count >= target:
+                    logger.info("[填充] 当前成员数已达到目标，停止继续添加")
+                    break
 
         logger.info("[填充] 填充完成")
         sync_to_cpa()
@@ -2435,7 +2421,9 @@ def main():
     admin_login_p.add_argument("--email", help="管理员邮箱；不传则运行时交互输入")
     admin_session_p = sub.add_parser("admin-session", help="手动输入 session_token 导入管理员登录态")
     admin_session_p.add_argument("--email", help="管理员邮箱；不传则运行时交互输入")
-    debug_admin_session_p = sub.add_parser("debug-admin-session", help="本地调试 session_token 是否能建立 ChatGPT Team 登录态")
+    debug_admin_session_p = sub.add_parser(
+        "debug-admin-session", help="本地调试 session_token 是否能建立 ChatGPT Team 登录态"
+    )
     debug_admin_session_p.add_argument("--email", help="管理员邮箱；不传则运行时交互输入")
     sub.add_parser("main-codex-sync", help="交互式同步主号 Codex 到 CPA")
 

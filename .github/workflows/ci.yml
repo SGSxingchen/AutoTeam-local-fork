@@ -1,16 +1,19 @@
-name: CI
+name: ci
 
 on:
-  push:
   pull_request:
-
-permissions:
-  contents: read
+  push:
+    branches:
+      - dev
 
 jobs:
-  backend-syntax:
-    name: Backend syntax
+  test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,54 +21,24 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: ${{ matrix.python-version }}
 
-      - name: Compile Python sources
-        run: |
-          python - <<'PY'
-          import py_compile
-          import subprocess
-          import sys
-
-          files = subprocess.check_output(
-              ["git", "ls-files", "*.py"],
-              text=True,
-          ).splitlines()
-
-          failed = []
-          for path in files:
-              try:
-                  py_compile.compile(path, doraise=True)
-              except Exception as exc:
-                  failed.append((path, exc))
-
-          if failed:
-              for path, exc in failed:
-                  print(f"{path}: {exc}")
-              sys.exit(1)
-
-          print(f"Compiled {len(files)} Python files successfully.")
-          PY
-
-  frontend-build:
-    name: Frontend build
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
         with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          enable-cache: true
 
       - name: Install dependencies
-        run: npm ci
+        run: uv sync --dev
 
-      - name: Build frontend
-        run: npm run build
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format
+        run: uv run ruff format --check .
+
+      - name: Pytest
+        run: uv run pytest
+
+      - name: Python compileall
+        run: uv run python -m compileall -q src/autoteam

@@ -20,9 +20,11 @@ REQUIRED_CONFIGS = [
     ("CLOUDMAIL_EMAIL", "CloudMail 登录邮箱", "", False),
     ("CLOUDMAIL_PASSWORD", "CloudMail 登录密码", "", False),
     ("CLOUDMAIL_DOMAIN", "CloudMail 邮箱域名（如 @example.com）", "", False),
-    ("CPA_URL", "CPA (CLIProxyAPI) 地址", "http://127.0.0.1:8317", True),
+    ("CPA_URL", "CPA (CLIProxyAPI) 地址", "http://127.0.0.1:8317", False),
     ("CPA_KEY", "CPA 管理密钥", "", False),
-    ("API_KEY", "API 鉴权密钥（回车自动生成）", "", True),
+    ("PLAYWRIGHT_PROXY_URL", "Playwright 浏览器代理 URL（可选，如 socks5://host:port）", "", True),
+    ("PLAYWRIGHT_PROXY_BYPASS", "Playwright 代理绕过列表（可选，如 localhost,127.0.0.1）", "", True),
+    ("API_KEY", "API 鉴权密钥（回车自动生成）", "", False),
 ]
 
 
@@ -79,7 +81,7 @@ def check_and_setup(interactive: bool = True) -> bool:
 
     for key, prompt, default, optional in REQUIRED_CONFIGS:
         val = env.get(key, "") or os.environ.get(key, "")
-        if not val:
+        if not val and not optional:
             missing.append((key, prompt, default, optional))
 
     if not missing:

@@ -21,4 +21,4 @@ runlogs.zip
 .pytest_cache/
 *.log
 .codex
-
+.coverage

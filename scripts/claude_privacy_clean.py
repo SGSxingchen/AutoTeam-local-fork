@@ -10,7 +10,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-
 LEVEL1_KEYS = [
     "userID",
     "anonymousId",
@@ -242,11 +241,7 @@ def main() -> int:
     if args.disable_nonessential_traffic:
         print(
             "Traffic setting: "
-            + (
-                "will write CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
-                if settings_change_needed
-                else "already set"
-            )
+            + ("will write CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1" if settings_change_needed else "already set")
         )
 
     if not args.apply:
@@ -317,14 +312,7 @@ def main() -> int:
     print_section("Removed JSON keys", removed_keys)
     print_section("Deleted paths", deleted_paths)
     if args.disable_nonessential_traffic:
-        print(
-            "Traffic setting: "
-            + (
-                "updated"
-                if settings_change_needed
-                else "already enabled"
-            )
-        )
+        print("Traffic setting: " + ("updated" if settings_change_needed else "already enabled"))
     if keychain_results:
         print_section("OAuth token cleanup", keychain_results)
 

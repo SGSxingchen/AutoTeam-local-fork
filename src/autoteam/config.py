@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 from autoteam.textio import parse_env_line, parse_env_value, read_text
 
@@ -52,3 +53,62 @@ AUTO_CHECK_INTERVAL = _get_int_env("AUTO_CHECK_INTERVAL", 300)  # 巡检间隔�
 AUTO_CHECK_THRESHOLD = _get_int_env("AUTO_CHECK_THRESHOLD", 10)  # 额度低于此百分比触发轮转，默认 10%
 AUTO_CHECK_MIN_LOW = _get_int_env("AUTO_CHECK_MIN_LOW", 2)  # 至少几个账号低于阈值才触发，默认 2
 PLAYWRIGHT_HEADLESS = _get_bool_env("PLAYWRIGHT_HEADLESS", False)
+
+# Playwright 代理配置
+PLAYWRIGHT_PROXY_URL = os.environ.get("PLAYWRIGHT_PROXY_URL", "").strip()
+PLAYWRIGHT_PROXY_SERVER = os.environ.get("PLAYWRIGHT_PROXY_SERVER", "").strip()
+PLAYWRIGHT_PROXY_USERNAME = os.environ.get("PLAYWRIGHT_PROXY_USERNAME", "").strip()
+PLAYWRIGHT_PROXY_PASSWORD = os.environ.get("PLAYWRIGHT_PROXY_PASSWORD", "").strip()
+PLAYWRIGHT_PROXY_BYPASS = os.environ.get("PLAYWRIGHT_PROXY_BYPASS", "").strip()
+
+
+def _format_proxy_host(hostname: str) -> str:
+    if ":" in hostname and not hostname.startswith("["):
+        return f"[{hostname}]"
+    return hostname
+
+
+def _parse_proxy_url(proxy_url: str):
+    if "://" not in proxy_url:
+        return {"server": proxy_url}
+
+    parsed = urlsplit(proxy_url)
+    if not parsed.scheme or not parsed.hostname:
+        return {"server": proxy_url}
+
+    host = _format_proxy_host(parsed.hostname)
+    server = f"{parsed.scheme}://{host}"
+    if parsed.port:
+        server = f"{server}:{parsed.port}"
+
+    proxy = {"server": server}
+    if parsed.username:
+        proxy["username"] = unquote(parsed.username)
+    if parsed.password:
+        proxy["password"] = unquote(parsed.password)
+    return proxy
+
+
+def get_playwright_launch_options():
+    """统一的 Playwright Chromium 启动参数。"""
+    options = {
+        "headless": PLAYWRIGHT_HEADLESS,
+        "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+    }
+
+    proxy = None
+    if PLAYWRIGHT_PROXY_URL:
+        proxy = _parse_proxy_url(PLAYWRIGHT_PROXY_URL)
+    elif PLAYWRIGHT_PROXY_SERVER:
+        proxy = {"server": PLAYWRIGHT_PROXY_SERVER}
+        if PLAYWRIGHT_PROXY_USERNAME:
+            proxy["username"] = PLAYWRIGHT_PROXY_USERNAME
+        if PLAYWRIGHT_PROXY_PASSWORD:
+            proxy["password"] = PLAYWRIGHT_PROXY_PASSWORD
+
+    if proxy:
+        if PLAYWRIGHT_PROXY_BYPASS:
+            proxy["bypass"] = PLAYWRIGHT_PROXY_BYPASS
+        options["proxy"] = proxy
+
+    return options

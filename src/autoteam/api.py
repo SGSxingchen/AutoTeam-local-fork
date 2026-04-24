@@ -74,6 +74,8 @@ class SetupConfig(BaseModel):
     CLOUDMAIL_DOMAIN: str = ""
     CPA_URL: str = "http://127.0.0.1:8317"
     CPA_KEY: str = ""
+    PLAYWRIGHT_PROXY_URL: str = ""
+    PLAYWRIGHT_PROXY_BYPASS: str = ""
     API_KEY: str = ""
 
 
@@ -99,14 +101,18 @@ def post_setup_save(config: SetupConfig):
     """保存配置到 .env 并验证连通性"""
     import secrets as _secrets
 
-    from autoteam.setup_wizard import _write_env
+    from autoteam.setup_wizard import REQUIRED_CONFIGS, _write_env
 
     data = config.model_dump()
+    defaults = {key: default for key, _prompt, default, _optional in REQUIRED_CONFIGS}
+    if not data.get("CPA_URL"):
+        data["CPA_URL"] = defaults.get("CPA_URL", "http://127.0.0.1:8317")
     if not data.get("API_KEY"):
         data["API_KEY"] = _secrets.token_urlsafe(24)
 
+    clearable_fields = {"PLAYWRIGHT_PROXY_URL", "PLAYWRIGHT_PROXY_BYPASS"}
     for key, value in data.items():
-        if value:
+        if value or key in clearable_fields:
             _write_env(key, value)
             os.environ[key] = value
 
@@ -148,7 +154,6 @@ def post_setup_save(config: SetupConfig):
 
 import queue as _queue
 
-
 _tasks: dict[str, dict] = {}
 _tasks_lock = threading.Lock()
 _task_queue: _queue.Queue = _queue.Queue()
@@ -159,6 +164,7 @@ _admin_login_api = None
 _admin_login_step: str | None = None
 _main_codex_flow = None
 _main_codex_step: str | None = None
+_main_codex_action: str | None = None
 _manual_account_flow = None
 MAX_TASK_HISTORY = 50
 
@@ -268,6 +274,41 @@ def _acquire_foreground_playwright_lock(default_message: str):
 
     if has_background_tasks or not lock_acquired:
         raise HTTPException(status_code=409, detail=_current_busy_detail(default_message))
+
+
+def _stop_playwright_resource(resource):
+    if not resource:
+        return
+
+    stop = getattr(resource, "stop", None)
+    if not callable(stop):
+        return
+
+    try:
+        stop()
+    except Exception:
+        pass
+
+
+def _run_playwright_start(factory, starter, *args, **kwargs):
+    resource = factory()
+    try:
+        result = starter(resource, *args, **kwargs)
+        return resource, result
+    except Exception:
+        _stop_playwright_resource(resource)
+        raise
+
+
+def _run_with_chatgpt_session(callback):
+    from autoteam.chatgpt_api import ChatGPTTeamAPI
+
+    chatgpt = ChatGPTTeamAPI()
+    try:
+        chatgpt.start()
+        return callback(chatgpt)
+    finally:
+        chatgpt.stop()
 
 
 def _current_busy_detail(default_message: str):
@@ -462,10 +503,53 @@ def _is_main_account_email(email: str | None) -> bool:
     return bool(_normalized_email(email)) and _normalized_email(email) == _normalized_email(get_admin_email())
 
 
-def _sanitize_account(acc: dict) -> dict:
+def _quota_snapshot_status(quota_info: dict | None) -> str:
+    if not isinstance(quota_info, dict):
+        return ""
+
+    values = []
+    for key in ("primary_pct", "weekly_pct"):
+        value = quota_info.get(key)
+        if isinstance(value, (int, float)):
+            values.append(value)
+
+    if not values:
+        return ""
+    return "exhausted" if any(value >= 100 for value in values) else "active"
+
+
+def _resolve_status_auth_file(acc: dict) -> str:
+    auth_file = (acc.get("auth_file") or "").strip()
+    if auth_file and Path(auth_file).exists():
+        return auth_file
+
+    if _is_main_account_email(acc.get("email")):
+        from autoteam.codex_auth import get_saved_main_auth_file
+
+        saved_auth_file = get_saved_main_auth_file()
+        if saved_auth_file and Path(saved_auth_file).exists():
+            return saved_auth_file
+
+    return ""
+
+
+def _display_account_status(acc: dict, quota_snapshot: dict | None = None) -> str:
+    status = acc.get("status", "")
+    if not _is_main_account_email(acc.get("email")):
+        return status
+
+    quota_status = _quota_snapshot_status(quota_snapshot) or _quota_snapshot_status(acc.get("last_quota"))
+    if quota_status:
+        return quota_status
+
+    return "active" if _resolve_status_auth_file(acc) else status
+
+
+def _sanitize_account(acc: dict, quota_snapshot: dict | None = None) -> dict:
     """脱敏账号信息（去掉 password 等敏感字段）"""
     sanitized = {k: v for k, v in acc.items() if k not in ("password", "cloudmail_account_id")}
     sanitized["is_main_account"] = _is_main_account_email(acc.get("email"))
+    sanitized["status"] = _display_account_status(acc, quota_snapshot)
     return sanitized
 
 
@@ -498,6 +582,7 @@ def _main_codex_status():
     return {
         "in_progress": _main_codex_flow is not None,
         "step": _main_codex_step,
+        "action": _main_codex_action,
     }
 
 
@@ -535,20 +620,9 @@ def _finish_admin_login(completed: dict):
                 pass
         _admin_login_api = None
         _admin_login_step = None
-        if info and info.get("session_token") and info.get("account_id"):
-            try:
-                from autoteam.codex_auth import refresh_main_auth_file
-
-                main_auth = _pw_executor.run(refresh_main_auth_file)
-                if main_auth:
-                    info["main_auth"] = main_auth
-                    logger.info("[API] 管理员登录后已刷新主号认证文件: %s", main_auth.get("auth_file"))
-            except Exception as exc:
-                info["main_auth_error"] = str(exc)
-                logger.warning("[API] 管理员登录完成，但刷新主号认证文件失败: %s", exc)
         if _playwright_lock.locked():
             _playwright_lock.release()
-    return {"status": "completed", "admin": _admin_status(), "info": info}
+    return {"status": "completed", "admin": _admin_status(), "codex": _main_codex_status(), "info": info}
 
 
 def _set_pending_admin_login(api, step):
@@ -558,9 +632,10 @@ def _set_pending_admin_login(api, step):
     return {"status": step, "admin": _admin_status()}
 
 
-def _finish_main_codex_sync():
-    global _main_codex_flow, _main_codex_step
+def _finish_main_codex_flow():
+    global _main_codex_flow, _main_codex_step, _main_codex_action
     flow = _main_codex_flow
+    action = _main_codex_action or "sync"
     try:
         info = _pw_executor.run(flow.complete)
     finally:
@@ -571,21 +646,45 @@ def _finish_main_codex_sync():
                 pass
         _main_codex_flow = None
         _main_codex_step = None
+        _main_codex_action = None
         if _playwright_lock.locked():
             _playwright_lock.release()
+
+    message = "主号 Codex 已同步到 CPA" if action == "sync" else "主号 Codex 已登录"
     return {
         "status": "completed",
-        "message": "主号 Codex 已同步到 CPA",
+        "message": message,
         "codex": _main_codex_status(),
         "info": info,
     }
 
 
-def _set_pending_main_codex_sync(flow, step):
-    global _main_codex_flow, _main_codex_step
+def _set_pending_main_codex_flow(flow, step, action):
+    global _main_codex_flow, _main_codex_step, _main_codex_action
     _main_codex_flow = flow
     _main_codex_step = step
+    _main_codex_action = action
     return {"status": step, "codex": _main_codex_status()}
+
+
+def _start_main_codex_flow(action="sync"):
+    from autoteam.codex_auth import MainCodexLoginFlow, MainCodexSyncFlow
+
+    flow_cls = MainCodexSyncFlow if action == "sync" else MainCodexLoginFlow
+
+    def _do_start():
+        return _run_playwright_start(flow_cls, lambda flow: flow.start())
+
+    flow, result = _pw_executor.run(_do_start)
+    step = result["step"]
+    if step == "completed":
+        _set_pending_main_codex_flow(flow, step, action)
+        return step, _finish_main_codex_flow()
+    if step in ("password_required", "code_required"):
+        return step, _set_pending_main_codex_flow(flow, step, action)
+
+    _pw_executor.run(flow.stop)
+    raise RuntimeError(result.get("detail") or "无法识别主号 Codex 登录步骤")
 
 
 def _finish_manual_account_flow(result: dict):
@@ -644,9 +743,9 @@ def post_admin_login_start(params: AdminEmailParams):
         logger.info("[API] 开始管理员登录: %s", params.email.strip())
 
         def _do_start(email):
-            api = ChatGPTTeamAPI()
-            result = api.begin_admin_login(email)
-            return api, result
+            return _run_playwright_start(
+                ChatGPTTeamAPI, lambda api, login_email: api.begin_admin_login(login_email), email
+            )
 
         api, result = _pw_executor.run(_do_start, params.email.strip())
         step = result["step"]
@@ -691,20 +790,9 @@ def post_admin_login_session(params: AdminSessionParams):
                 api.stop()
 
         info = _pw_executor.run(_do_import, params.email.strip(), params.session_token.strip())
-        if info.get("session_token") and info.get("account_id"):
-            try:
-                from autoteam.codex_auth import refresh_main_auth_file
-
-                main_auth = _pw_executor.run(refresh_main_auth_file)
-                if main_auth:
-                    info["main_auth"] = main_auth
-                    logger.info("[API] session_token 导入后已刷新主号认证文件: %s", main_auth.get("auth_file"))
-            except Exception as exc:
-                info["main_auth_error"] = str(exc)
-                logger.warning("[API] session_token 导入完成，但刷新主号认证文件失败: %s", exc)
         _admin_login_api = None
         _admin_login_step = None
-        return {"status": "completed", "admin": _admin_status(), "info": info}
+        return {"status": "completed", "admin": _admin_status(), "codex": _main_codex_status(), "info": info}
     except HTTPException:
         raise
     except Exception as exc:
@@ -844,7 +932,7 @@ def post_admin_logout():
 @app.post("/api/main-codex/start")
 def post_main_codex_start():
     """开始主号 Codex 登录并同步到 CPA。"""
-    global _main_codex_flow, _main_codex_step
+    global _main_codex_flow, _main_codex_step, _main_codex_action
 
     if _main_codex_flow:
         try:
@@ -853,6 +941,7 @@ def post_main_codex_start():
             pass
         _main_codex_flow = None
         _main_codex_step = None
+        _main_codex_action = None
         if _playwright_lock.locked():
             _playwright_lock.release()
 
@@ -872,23 +961,40 @@ def post_main_codex_start():
     _acquire_foreground_playwright_lock("有任务正在排队或执行，请等待完成后再同步主号 Codex")
 
     try:
-        from autoteam.codex_auth import MainCodexSyncFlow
+        _step, result = _start_main_codex_flow(action="sync")
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if _playwright_lock.locked():
+            _playwright_lock.release()
+        raise HTTPException(status_code=400, detail=str(exc))
 
-        def _do_start():
-            flow = MainCodexSyncFlow()
-            result = flow.start()
-            return flow, result
 
-        flow, result = _pw_executor.run(_do_start)
-        step = result["step"]
-        if step == "completed":
-            _main_codex_flow = flow
-            return _finish_main_codex_sync()
-        if step in ("email_required", "password_required", "code_required"):
-            return _set_pending_main_codex_sync(flow, step)
-        _pw_executor.run(flow.stop)
-        _playwright_lock.release()
-        raise HTTPException(status_code=400, detail=result.get("detail") or "无法识别主号 Codex 登录步骤")
+@app.post("/api/main-codex/login")
+def post_main_codex_login():
+    """开始主号 Codex 登录，仅保存本地认证文件。"""
+    global _main_codex_flow, _main_codex_step, _main_codex_action
+
+    if _main_codex_flow:
+        try:
+            _pw_executor.run(_main_codex_flow.stop)
+        except Exception:
+            pass
+        _main_codex_flow = None
+        _main_codex_step = None
+        _main_codex_action = None
+        if _playwright_lock.locked():
+            _playwright_lock.release()
+
+    if not _playwright_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409, detail=_current_busy_detail("有任务正在执行，请等待完成后再登录主号 Codex")
+        )
+
+    try:
+        _step, result = _start_main_codex_flow(action="login")
+        return result
     except HTTPException:
         raise
     except Exception as exc:
@@ -900,7 +1006,7 @@ def post_main_codex_start():
 @app.post("/api/main-codex/password")
 def post_main_codex_password(params: AdminPasswordParams):
     """提交主号 Codex 登录密码。"""
-    global _main_codex_flow, _main_codex_step
+    global _main_codex_flow, _main_codex_step, _main_codex_action
     if not _main_codex_flow or _main_codex_step != "password_required":
         raise HTTPException(status_code=409, detail="当前没有等待密码的主号 Codex 登录流程")
 
@@ -908,8 +1014,8 @@ def post_main_codex_password(params: AdminPasswordParams):
         result = _pw_executor.run(_main_codex_flow.submit_password, params.password)
         step = result["step"]
         if step == "completed":
-            return _finish_main_codex_sync()
-        if step in ("email_required", "password_required", "code_required"):
+            return _finish_main_codex_flow()
+        if step in ("password_required", "code_required"):
             _main_codex_step = step
             return {"status": step, "codex": _main_codex_status()}
         raise HTTPException(status_code=400, detail=result.get("detail") or "主号 Codex 密码登录失败")
@@ -922,6 +1028,7 @@ def post_main_codex_password(params: AdminPasswordParams):
             pass
         _main_codex_flow = None
         _main_codex_step = None
+        _main_codex_action = None
         if _playwright_lock.locked():
             _playwright_lock.release()
         raise HTTPException(status_code=400, detail=str(exc))
@@ -930,7 +1037,7 @@ def post_main_codex_password(params: AdminPasswordParams):
 @app.post("/api/main-codex/code")
 def post_main_codex_code(params: AdminCodeParams):
     """提交主号 Codex 登录验证码。"""
-    global _main_codex_flow, _main_codex_step
+    global _main_codex_flow, _main_codex_step, _main_codex_action
     if not _main_codex_flow or _main_codex_step != "code_required":
         raise HTTPException(status_code=409, detail="当前没有等待验证码的主号 Codex 登录流程")
 
@@ -938,8 +1045,8 @@ def post_main_codex_code(params: AdminCodeParams):
         result = _pw_executor.run(_main_codex_flow.submit_code, params.code.strip())
         step = result["step"]
         if step == "completed":
-            return _finish_main_codex_sync()
-        if step in ("email_required", "password_required", "code_required"):
+            return _finish_main_codex_flow()
+        if step in ("password_required", "code_required"):
             _main_codex_step = step
             return {"status": step, "codex": _main_codex_status()}
         raise HTTPException(status_code=400, detail=result.get("detail") or "主号 Codex 验证码登录失败")
@@ -952,6 +1059,7 @@ def post_main_codex_code(params: AdminCodeParams):
             pass
         _main_codex_flow = None
         _main_codex_step = None
+        _main_codex_action = None
         if _playwright_lock.locked():
             _playwright_lock.release()
         raise HTTPException(status_code=400, detail=str(exc))
@@ -960,7 +1068,7 @@ def post_main_codex_code(params: AdminCodeParams):
 @app.post("/api/main-codex/cancel")
 def post_main_codex_cancel():
     """取消主号 Codex 登录流程。"""
-    global _main_codex_flow, _main_codex_step
+    global _main_codex_flow, _main_codex_step, _main_codex_action
     if _main_codex_flow:
         try:
             _pw_executor.run(_main_codex_flow.stop)
@@ -968,9 +1076,22 @@ def post_main_codex_cancel():
             pass
         _main_codex_flow = None
         _main_codex_step = None
+        _main_codex_action = None
         if _playwright_lock.locked():
             _playwright_lock.release()
     return {"message": "主号 Codex 登录已取消", "codex": _main_codex_status()}
+
+
+@app.post("/api/main-codex/delete-cpa")
+def post_main_codex_delete_cpa():
+    """删除 CPA 中已上传的主号 Codex 认证文件。"""
+    from autoteam.cpa_sync import delete_main_codex_from_cpa
+
+    result = delete_main_codex_from_cpa()
+    return {
+        "message": f"已从 CPA 删除 {result['count']} 个主号认证文件",
+        "deleted": result["deleted"],
+    }
 
 
 @app.post("/api/manual-account/start")
@@ -1115,7 +1236,7 @@ def delete_account(email: str):
         if not any(a["email"].lower() == email.lower() for a in accounts):
             raise HTTPException(status_code=404, detail="账号不存在")
 
-        cleanup = delete_managed_account(email)
+        cleanup = _pw_executor.run(delete_managed_account, email)
         return {
             "message": "账号删除完成",
             "deleted_email": email,
@@ -1144,18 +1265,14 @@ def post_kick_account(email: str):
         if acc["status"] != "active":
             raise HTTPException(status_code=400, detail=f"账号状态为 {acc['status']}，不是 active")
 
-        from autoteam.chatgpt_api import ChatGPTTeamAPI
+        def _do_kick():
+            return _run_with_chatgpt_session(lambda chatgpt: remove_from_team(chatgpt, email))
 
-        chatgpt = ChatGPTTeamAPI()
-        chatgpt.start()
-        try:
-            ok = remove_from_team(chatgpt, email)
-            if ok:
-                update_account(email, status="standby")
-                return {"message": f"已将 {email} 移出 Team", "email": email, "status": "standby"}
-            raise HTTPException(status_code=500, detail=f"移出 {email} 失败")
-        finally:
-            chatgpt.stop()
+        ok = _pw_executor.run(_do_kick)
+        if ok:
+            update_account(email, status="standby")
+            return {"message": f"已将 {email} 移出 Team", "email": email, "status": "standby"}
+        raise HTTPException(status_code=500, detail=f"移出 {email} 失败")
     finally:
         _playwright_lock.release()
 
@@ -1234,25 +1351,33 @@ def get_status():
     quota_cache = {}
 
     for acc in accounts:
-        if acc["status"] == STATUS_ACTIVE and acc.get("auth_file") and Path(acc["auth_file"]).exists():
-            try:
-                auth_data = json.loads(read_text(Path(acc["auth_file"])))
-                access_token = auth_data.get("access_token")
-                if access_token:
-                    status, info = check_codex_quota(access_token)
-                    if status == "ok" and isinstance(info, dict):
-                        quota_cache[acc["email"]] = info
-                    elif status == "exhausted":
-                        quota_info = quota_result_quota_info(info)
-                        if quota_info:
-                            quota_cache[acc["email"]] = quota_info
-            except Exception:
-                pass
+        if acc["status"] != STATUS_ACTIVE and not _is_main_account_email(acc.get("email")):
+            continue
+
+        auth_file = _resolve_status_auth_file(acc)
+        if not auth_file:
+            continue
+
+        try:
+            auth_data = json.loads(read_text(Path(auth_file)))
+            access_token = auth_data.get("access_token")
+            if access_token:
+                status, info = check_codex_quota(access_token)
+                if status == "ok" and isinstance(info, dict):
+                    quota_cache[acc["email"]] = info
+                elif status == "exhausted":
+                    quota_info = quota_result_quota_info(info)
+                    if quota_info:
+                        quota_cache[acc["email"]] = quota_info
+        except Exception:
+            pass
+
+    sanitized_accounts = [_sanitize_account(a, quota_cache.get(a.get("email"))) for a in accounts]
 
     summary = _account_summary(accounts)
 
     return {
-        "accounts": [_sanitize_account(a) for a in accounts],
+        "accounts": sanitized_accounts,
         "summary": summary,
         "quota_cache": quota_cache,
     }
@@ -1283,7 +1408,7 @@ def post_sync_accounts():
 
     _acquire_foreground_playwright_lock("有任务正在排队或执行，请等待完成后再同步账号")
     try:
-        sync_account_states()
+        _pw_executor.run(sync_account_states)
         from autoteam.accounts import load_accounts
 
         accounts = load_accounts()
@@ -1309,43 +1434,49 @@ def get_team_members():
     _acquire_foreground_playwright_lock("有任务正在排队或执行，请等待完成后再查询")
 
     try:
-        from autoteam.chatgpt_api import ChatGPTTeamAPI
 
-        chatgpt = ChatGPTTeamAPI()
-        chatgpt.start()
-        try:
+        def _fetch_team_members():
             from autoteam.account_ops import fetch_team_state
             from autoteam.accounts import load_accounts
 
-            members, invites = fetch_team_state(chatgpt)
-            local_emails = {a["email"].lower() for a in load_accounts()}
+            def _collect(chatgpt):
+                members, invites = fetch_team_state(chatgpt)
+                local_emails = {a["email"].lower() for a in load_accounts()}
 
-            result = []
-            for m in members:
-                email = (m.get("email") or "").lower()
-                result.append(
-                    {
-                        "email": m.get("email", ""),
-                        "role": m.get("role", ""),
-                        "user_id": m.get("user_id") or m.get("id", ""),
-                        "is_local": email in local_emails,
-                        "type": "member",
-                    }
-                )
-            for inv in invites:
-                email = (inv.get("email_address") or inv.get("email") or "").lower()
-                result.append(
-                    {
-                        "email": email,
-                        "role": inv.get("role", ""),
-                        "user_id": inv.get("id", ""),
-                        "is_local": email in local_emails,
-                        "type": "invite",
-                    }
-                )
-            return {"members": result, "total": len(members), "invites": len(invites)}
-        finally:
-            chatgpt.stop()
+                result = []
+                for m in members:
+                    email = (m.get("email") or "").lower()
+                    result.append(
+                        {
+                            "email": m.get("email", ""),
+                            "role": m.get("role", ""),
+                            "user_id": m.get("user_id") or m.get("id", ""),
+                            "is_local": email in local_emails,
+                            "type": "member",
+                        }
+                    )
+                for inv in invites:
+                    email = (inv.get("email_address") or inv.get("email") or "").lower()
+                    result.append(
+                        {
+                            "email": email,
+                            "role": inv.get("role", ""),
+                            "user_id": inv.get("id", ""),
+                            "is_local": email in local_emails,
+                            "type": "invite",
+                        }
+                    )
+                return {"members": result, "total": len(members), "invites": len(invites)}
+
+            return _run_with_chatgpt_session(_collect)
+
+        try:
+            return _pw_executor.run(_fetch_team_members)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("[API] 获取 Team 成员失败")
+            raise HTTPException(status_code=502, detail=str(exc))
     finally:
         _playwright_lock.release()
 
@@ -1362,7 +1493,6 @@ def post_team_member_remove(params: TeamMemberRemoveParams):
 
     try:
         from autoteam.accounts import find_account, load_accounts, update_account
-        from autoteam.chatgpt_api import ChatGPTTeamAPI
 
         email = params.email.strip().lower()
         user_id = params.user_id.strip()
@@ -1376,32 +1506,41 @@ def post_team_member_remove(params: TeamMemberRemoveParams):
             raise HTTPException(status_code=400, detail="无效的成员类型")
 
         account_id = get_chatgpt_account_id()
-        chatgpt = ChatGPTTeamAPI()
-        chatgpt.start()
+
+        def _do_remove_team_member():
+            def _remove(chatgpt):
+                if member_type == "invite":
+                    path = f"/backend-api/accounts/{account_id}/invites/{user_id}"
+                    action_text = "取消邀请"
+                else:
+                    path = f"/backend-api/accounts/{account_id}/users/{user_id}"
+                    action_text = "移出 Team"
+
+                result = chatgpt._api_fetch("DELETE", path)
+                return result, action_text
+
+            return _run_with_chatgpt_session(_remove)
+
         try:
-            if member_type == "invite":
-                path = f"/backend-api/accounts/{account_id}/invites/{user_id}"
-                action_text = "取消邀请"
-            else:
-                path = f"/backend-api/accounts/{account_id}/users/{user_id}"
-                action_text = "移出 Team"
+            result, action_text = _pw_executor.run(_do_remove_team_member)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("[API] Team 成员移除失败")
+            raise HTTPException(status_code=502, detail=str(exc))
+        if result["status"] not in (200, 204):
+            raise HTTPException(status_code=500, detail=f"{action_text}失败: HTTP {result['status']}")
 
-            result = chatgpt._api_fetch("DELETE", path)
-            if result["status"] not in (200, 204):
-                raise HTTPException(status_code=500, detail=f"{action_text}失败: HTTP {result['status']}")
+        accounts = load_accounts()
+        acc = find_account(accounts, email)
+        if acc:
+            update_account(email, status="standby")
 
-            accounts = load_accounts()
-            acc = find_account(accounts, email)
-            if acc:
-                update_account(email, status="standby")
-
-            return {
-                "message": f"已{action_text}: {email}",
-                "email": email,
-                "type": member_type,
-            }
-        finally:
-            chatgpt.stop()
+        return {
+            "message": f"已{action_text}: {email}",
+            "email": email,
+            "type": member_type,
+        }
     finally:
         _playwright_lock.release()
 
@@ -1553,10 +1692,33 @@ _auto_check_stop = threading.Event()
 _auto_check_restart = threading.Event()  # 配置变更时通知线程重启
 
 
+def _auto_check_team_member_count():
+    """查询 Team 实际成员数，供自动巡检的人数兜底判断使用。"""
+    chatgpt = None
+    try:
+        from autoteam.chatgpt_api import ChatGPTTeamAPI
+        from autoteam.manager import get_team_member_count
+
+        chatgpt = ChatGPTTeamAPI()
+        chatgpt.start()
+        return get_team_member_count(chatgpt)
+    except Exception as exc:
+        logger.warning("[巡检] 查询 Team 实际成员数失败: %s", exc)
+        return -1
+    finally:
+        try:
+            if chatgpt and chatgpt.browser:
+                chatgpt.stop()
+        except Exception:
+            pass
+
+
 def _auto_check_loop():
     """后台巡检线程：定期检查额度，多个账号低于阈值时自动轮转"""
     from autoteam.accounts import STATUS_ACTIVE, load_accounts
     from autoteam.codex_auth import check_codex_quota
+
+    target_seats = 5
 
     while not _auto_check_stop.is_set():
         cfg = _auto_check_config
@@ -1577,14 +1739,17 @@ def _auto_check_loop():
         try:
             cfg = _auto_check_config  # 重新读取
             accounts = load_accounts()
+            local_active_count = sum(
+                1 for a in accounts if a["status"] == STATUS_ACTIVE and not _is_main_account_email(a.get("email"))
+            )
             active = [
                 a
                 for a in accounts
-                if a["status"] == STATUS_ACTIVE and a.get("auth_file") and Path(a["auth_file"]).exists()
+                if a["status"] == STATUS_ACTIVE
+                and not _is_main_account_email(a.get("email"))
+                and a.get("auth_file")
+                and Path(a["auth_file"]).exists()
             ]
-
-            if not active:
-                continue
 
             low_accounts = []
             for acc in active:
@@ -1597,18 +1762,42 @@ def _auto_check_loop():
                     if status == "ok" and isinstance(info, dict):
                         remaining = 100 - info.get("primary_pct", 0)
                         if remaining < cfg["threshold"]:
-                            low_accounts.append((acc["email"], remaining))
+                            low_accounts.append((acc["email"], remaining, status, info))
                     elif status == "exhausted":
-                        low_accounts.append((acc["email"], 0))
+                        low_accounts.append((acc["email"], 0, status, info))
                 except Exception:
                     pass
 
             if low_accounts:
                 logger.info(
-                    "[巡检] %d 个账号额度不足: %s", len(low_accounts), ", ".join(f"{e}({r}%)" for e, r in low_accounts)
+                    "[巡检] %d 个账号额度不足: %s",
+                    len(low_accounts),
+                    ", ".join(f"{e}({r}%)" for e, r, _status, _info in low_accounts),
                 )
 
-            if len(low_accounts) >= cfg["min_low"]:
+            shortage = max(0, target_seats - local_active_count)
+            actual_team_count = -1
+            trigger_rotate = len(low_accounts) >= cfg["min_low"]
+            if not trigger_rotate and shortage > 0:
+                actual_team_count = _auto_check_team_member_count()
+                if actual_team_count >= target_seats:
+                    logger.info(
+                        "[巡检] Team 实际成员数已满足（%d/%d），跳过基于 active 数的自动补位",
+                        actual_team_count,
+                        target_seats,
+                    )
+                    shortage = 0
+                elif actual_team_count >= 0:
+                    shortage = max(0, target_seats - actual_team_count)
+                    trigger_rotate = shortage > 0
+                else:
+                    logger.warning(
+                        "[巡检] 当前 active 数不足 (%d/%d)，但 Team 成员数校验失败，暂不触发自动补位",
+                        local_active_count,
+                        target_seats,
+                    )
+
+            if trigger_rotate:
                 # 显式队列模式下，已有后台任务时不再继续堆积自动轮转
                 if _has_background_tasks():
                     logger.info("[巡检] 已有后台任务排队或执行，跳过本轮自动轮转")
@@ -1617,26 +1806,73 @@ def _auto_check_loop():
                     logger.info("[巡检] 当前存在交互式登录流程，跳过本轮自动轮转")
                     continue
                 if not _playwright_lock.acquire(blocking=False):
-                    logger.info("[巡检] Playwright 正忙，跳过本轮自动轮转")
+                    logger.info("[巡检] Playwright 正忙，跳过本轮自动轮转/补位")
                     continue
                 _playwright_lock.release()
 
                 # 将低于阈值的账号标记为 exhausted，rotate 会自动移出并补充
                 from autoteam.accounts import STATUS_EXHAUSTED, update_account
+                from autoteam.codex_auth import quota_result_quota_info, quota_result_resets_at
 
-                for email, remaining in low_accounts:
+                for email, remaining, status, info in low_accounts:
                     logger.info("[巡检] %s 剩余 %d%%，标记为 exhausted", email, remaining)
-                    update_account(email, status=STATUS_EXHAUSTED, quota_exhausted_at=time.time())
+                    status_kwargs = {
+                        "status": STATUS_EXHAUSTED,
+                        "quota_exhausted_at": time.time(),
+                    }
+                    if status == "ok":
+                        status_kwargs["last_quota"] = info if isinstance(info, dict) else None
+                        status_kwargs["quota_resets_at"] = (
+                            info.get("primary_resets_at") if isinstance(info, dict) else None
+                        ) or int(time.time() + 18000)
+                    else:
+                        status_kwargs["last_quota"] = quota_result_quota_info(info)
+                        status_kwargs["quota_resets_at"] = quota_result_resets_at(info) or int(time.time() + 18000)
+                    update_account(email, **status_kwargs)
 
-                logger.info("[巡检] 触发自动轮转...")
+                if shortage > 0 and len(low_accounts) >= cfg["min_low"]:
+                    logger.info(
+                        "[巡检] 当前 active 数不足: %d/%d，且检测到低额度账号，触发自动轮转...",
+                        local_active_count,
+                        target_seats,
+                    )
+                elif shortage > 0:
+                    logger.info("[巡检] 当前 active 数不足: %d/%d，触发自动补位...", local_active_count, target_seats)
+                else:
+                    logger.info("[巡检] 触发自动轮转...")
                 from autoteam.manager import cmd_rotate
 
                 try:
-                    _start_task("auto-rotate", cmd_rotate, {"target": 5, "trigger": "auto-check"}, 5)
+                    _start_task(
+                        "auto-rotate",
+                        cmd_rotate,
+                        {
+                            "target": target_seats,
+                            "trigger": "auto-check",
+                            "shortage": shortage,
+                            "low_accounts": len(low_accounts),
+                        },
+                        target_seats,
+                    )
                 except Exception as e:
                     logger.error("[巡检] 自动轮转失败: %s", e)
             else:
-                logger.info("[巡检] 额度正常，无需轮转")
+                if low_accounts and actual_team_count >= target_seats:
+                    logger.info(
+                        "[巡检] 低额度账号未达到触发阈值（%d/%d），且 Team 实际成员数已满足（%d/%d），无需轮转",
+                        len(low_accounts),
+                        cfg["min_low"],
+                        actual_team_count,
+                        target_seats,
+                    )
+                elif low_accounts:
+                    logger.info(
+                        "[巡检] 低额度账号未达到触发阈值（%d/%d），无需轮转",
+                        len(low_accounts),
+                        cfg["min_low"],
+                    )
+                else:
+                    logger.info("[巡检] 额度正常且 active 数充足（%d/%d），无需轮转", local_active_count, target_seats)
 
         except Exception as e:
             logger.error("[巡检] 巡检异常: %s", e)

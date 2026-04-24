@@ -14,12 +14,37 @@ cp .env.example .env
 | `CLOUDMAIL_EMAIL` | CloudMail 登录邮箱 | 是 |
 | `CLOUDMAIL_PASSWORD` | CloudMail 登录密码 | 是 |
 | `CLOUDMAIL_DOMAIN` | 临时邮箱域名（如 `@example.com`） | 是 |
-| `CPA_URL` | CLIProxyAPI 地址 | 否（默认 `http://127.0.0.1:8317`） |
+| `CPA_URL` | CLIProxyAPI 地址 | 是（留空使用默认 `http://127.0.0.1:8317`） |
 | `CPA_KEY` | CPA 管理密钥 | 是 |
-| `API_KEY` | Web 面板 / API 鉴权密钥 | 否（首次启动自动生成） |
+| `API_KEY` | Web 面板 / API 鉴权密钥 | 是（首次启动可自动生成） |
+| `PLAYWRIGHT_PROXY_URL` | Playwright 浏览器代理 URL，如 `socks5://host:port` 或 `http://user:pass@host:port` | 否 |
+| `PLAYWRIGHT_PROXY_BYPASS` | Playwright 代理绕过列表，如 `localhost,127.0.0.1` | 否 |
 | `AUTO_CHECK_THRESHOLD` | 额度低于此百分比触发轮转 | 否（默认 `10`） |
 | `AUTO_CHECK_INTERVAL` | 巡检间隔（秒） | 否（默认 `300`） |
 | `AUTO_CHECK_MIN_LOW` | 至少几个账号低于阈值才触发 | 否（默认 `2`） |
+
+## Playwright 代理
+
+AutoTeam 的浏览器流量（ChatGPT 登录、邀请接受、Codex OAuth 等）现在支持单独配置代理。
+
+推荐优先使用一个环境变量：
+
+```dotenv
+PLAYWRIGHT_PROXY_URL=socks5://host.docker.internal:1080
+PLAYWRIGHT_PROXY_BYPASS=localhost,127.0.0.1
+```
+
+如果代理需要认证，建议改用 HTTP 代理并直接写进 URL：
+
+```dotenv
+PLAYWRIGHT_PROXY_URL=http://username:password@host.docker.internal:1080
+```
+
+说明：
+
+- `PLAYWRIGHT_PROXY_URL` 会被解析为 Playwright 所需的 `server` / `username` / `password` 字段
+- Playwright / Chromium **不支持带认证的 socks5**，因此不要使用 `socks5://username:password@host:port`
+- `PLAYWRIGHT_PROXY_BYPASS` 建议至少包含 `localhost,127.0.0.1`，避免本地回调或容器内本地服务误走代理
 
 ### 内联注释
 

@@ -118,6 +118,23 @@ docker compose restart
 
 直接打开 `http://your-server:8787`，会显示配置向导页面，在浏览器中填写。
 
+如果你需要让浏览器流量走宿主机 SOCKS5 代理，请先确认容器内可以解析并访问宿主机代理地址（例如 `host.docker.internal`，或你自己提供的宿主机网关别名）。
+
+然后在 `data/.env` 中加入：
+
+```dotenv
+PLAYWRIGHT_PROXY_URL=socks5://host.docker.internal:1080
+PLAYWRIGHT_PROXY_BYPASS=localhost,127.0.0.1
+```
+
+如果代理需要认证，建议改用 HTTP 代理：
+
+```dotenv
+PLAYWRIGHT_PROXY_URL=http://username:password@host.docker.internal:1080
+```
+
+> 注意：Playwright / Chromium 不支持带认证的 socks5，因此不要写成 `socks5://username:password@host:port`。
+
 ## 第三步：管理员登录
 
 配置完成后，需要先用 ChatGPT Team 管理员账号登录。

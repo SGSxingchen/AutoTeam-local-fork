@@ -598,3 +598,19 @@ def sync_main_codex_to_cpa(filepath):
 
     logger.info("[CPA] 主号 Codex 已同步: %s", name)
     return {"uploaded": name}
+
+
+def delete_main_codex_from_cpa():
+    """删除 CPA 中的主号 Codex 认证文件。"""
+    existing = list_cpa_files()
+    deleted = []
+
+    for item in existing:
+        name = item.get("name") or ""
+        if not name.startswith("codex-main-"):
+            continue
+        logger.info("[CPA] 删除主号文件: %s", name)
+        if delete_from_cpa(name):
+            deleted.append(name)
+
+    return {"deleted": deleted, "count": len(deleted)}

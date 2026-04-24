@@ -1,11 +1,6 @@
 import sys
 
-from autoteam.config import PLAYWRIGHT_HEADLESS
-
-DEFAULT_BROWSER_ARGS = [
-    "--disable-blink-features=AutomationControlled",
-    "--no-sandbox",
-]
+from autoteam.config import PLAYWRIGHT_HEADLESS, get_playwright_launch_options
 
 DEFAULT_CONTEXT_KWARGS = {
     "viewport": {"width": 1280, "height": 800},
@@ -18,10 +13,7 @@ DEFAULT_CONTEXT_KWARGS = {
 
 
 def chromium_launch_kwargs() -> dict:
-    kwargs = {
-        "headless": PLAYWRIGHT_HEADLESS,
-        "args": list(DEFAULT_BROWSER_ARGS),
-    }
+    kwargs = get_playwright_launch_options()
     if sys.platform.startswith("win") and not PLAYWRIGHT_HEADLESS:
         kwargs["slow_mo"] = 100
     return kwargs
