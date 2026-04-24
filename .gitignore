@@ -20,3 +20,5 @@ runlogs.zip
 .ruff_cache/
 .pytest_cache/
 *.log
+.codex
+
