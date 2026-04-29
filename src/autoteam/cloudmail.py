@@ -26,10 +26,12 @@ _VERIFICATION_CODE_PATTERNS = (
 
 
 class CloudMailClient:
-    def __init__(self):
+    def __init__(self, domain=None):
         self.base_url = CLOUDMAIL_BASE_URL
         self.token = None
         self.session = requests.Session()
+        # 显式传入 domain 覆盖默认 CLOUDMAIL_DOMAIN（用于 Free 注册的独立域名）
+        self._domain = domain if domain is not None else CLOUDMAIL_DOMAIN
 
     def _headers(self):
         h = {"Content-Type": "application/json"}
@@ -68,7 +70,7 @@ class CloudMailClient:
         """创建临时邮箱地址，返回 (accountId, email)"""
         if prefix is None:
             prefix = f"tmp-{uuid.uuid4().hex[:8]}"
-        email = f"{prefix}{CLOUDMAIL_DOMAIN}"
+        email = f"{prefix}{self._domain}"
 
         resp = self._post("/account/add", {"email": email})
         if resp["code"] != 200:
