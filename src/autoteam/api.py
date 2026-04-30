@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from autoteam.config import API_KEY
+from autoteam.config import API_KEY, CLOUDMAIL_FREE_DOMAIN
 from autoteam.textio import read_text
 
 logger = logging.getLogger(__name__)
@@ -460,6 +460,10 @@ class TaskParams(BaseModel):
 
 class CleanupParams(BaseModel):
     max_seats: int | None = None
+
+
+class FreeCreateParams(BaseModel):
+    count: int = 1
 
 
 class AdminEmailParams(BaseModel):
@@ -1647,6 +1651,79 @@ def post_cleanup(params: CleanupParams = CleanupParams()):
     from autoteam.manager import cmd_cleanup
 
     task = _start_task("cleanup", cmd_cleanup, {"max_seats": params.max_seats}, params.max_seats)
+    return task
+
+
+# ---------------------------------------------------------------------------
+# Free 账号管理
+# ---------------------------------------------------------------------------
+
+
+def _free_disabled_response():
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "enabled": False,
+            "reason": "CLOUDMAIL_FREE_DOMAIN not set",
+        },
+    )
+
+
+@app.get("/api/free/accounts")
+def get_free_accounts():
+    from autoteam.free_accounts import load_free_accounts
+
+    if not CLOUDMAIL_FREE_DOMAIN:
+        return {"enabled": False, "reason": "CLOUDMAIL_FREE_DOMAIN not set", "accounts": []}
+
+    accounts = []
+    for row in load_free_accounts():
+        auth_file = row.get("auth_file") or ""
+        accounts.append(
+            {
+                "email": row["email"],
+                "plan_type": row.get("plan_type"),
+                "created_at": row.get("created_at"),
+                "last_refreshed_at": row.get("last_refreshed_at"),
+                "last_error": row.get("last_error"),
+                "auth_file_exists": bool(auth_file) and Path(auth_file).exists(),
+            }
+        )
+    return {"enabled": True, "accounts": accounts}
+
+
+@app.post("/api/free/accounts", status_code=202)
+def post_free_accounts(params: FreeCreateParams):
+    if not CLOUDMAIL_FREE_DOMAIN:
+        _free_disabled_response()
+    if not (1 <= params.count <= 50):
+        raise HTTPException(status_code=400, detail="count must be in 1..50")
+
+    from autoteam.free_register import create_free_accounts_batch
+
+    task = _start_task("free.create", create_free_accounts_batch, {"count": params.count}, params.count)
+    return task
+
+
+@app.delete("/api/free/accounts/{email}", status_code=202)
+def delete_free_account_endpoint(email: str):
+    if not CLOUDMAIL_FREE_DOMAIN:
+        _free_disabled_response()
+
+    from autoteam.free_register import delete_free_account_full
+
+    task = _start_task("free.delete", delete_free_account_full, {"email": email}, email)
+    return task
+
+
+@app.post("/api/free/accounts/{email}/refresh", status_code=202)
+def post_free_account_refresh(email: str):
+    if not CLOUDMAIL_FREE_DOMAIN:
+        _free_disabled_response()
+
+    from autoteam.free_register import refresh_codex
+
+    task = _start_task("free.refresh", refresh_codex, {"email": email}, email)
     return task
 
 
