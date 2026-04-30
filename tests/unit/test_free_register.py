@@ -132,3 +132,43 @@ def test_create_free_account_cpa_upload_failure_keeps_record(tmp_path, monkeypat
 
     assert result["status"] == "ok"
     assert len(free_accounts.load_free_accounts()) == 1
+
+
+def test_batch_creation_aggregates_results(tmp_path, monkeypatch):
+    _patch_state(tmp_path, monkeypatch)
+
+    mail_client = MagicMock()
+    mail_client.create_temp_email.side_effect = [
+        (1, "a@free.example.com"),
+        (2, "b@free.example.com"),
+        (3, "c@free.example.com"),
+    ]
+    monkeypatch.setattr(free_register, "make_free_mail_client", lambda: mail_client)
+
+    register_results = iter([True, False, True])
+    monkeypatch.setattr(
+        free_register,
+        "_register_direct_once",
+        lambda *a, **k: next(register_results),
+    )
+    monkeypatch.setattr(
+        free_register,
+        "login_codex_via_browser",
+        lambda email, password, mail_client=None: {
+            "access_token": "at",
+            "refresh_token": "rt",
+            "id_token": "it",
+            "account_id": "aid",
+            "email": email,
+            "plan_type": "free",
+        },
+    )
+    monkeypatch.setattr(free_register, "save_auth_file", lambda bundle: tmp_path / f"codex-{bundle['email']}.json")
+    monkeypatch.setattr(free_register, "upload_to_cpa", lambda path: True)
+
+    result = free_register.create_free_accounts_batch(3)
+
+    assert result["count"] == 3
+    assert result["succeeded"] == ["a@free.example.com", "c@free.example.com"]
+    assert [f["email"] for f in result["failed"]] == ["b@free.example.com"]
+    assert result["failed"][0]["reason"] == "register_failed_3x"

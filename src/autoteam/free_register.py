@@ -91,3 +91,22 @@ def create_one_free_account(mail_client):
         if account_id is not None:
             _rollback_cloudmail(mail_client, account_id)
         return {"status": "failed", "email": email, "reason": f"unexpected:{exc}"}
+
+
+def create_free_accounts_batch(count):
+    """批量创建 Free 账号；遇到单次失败不阻塞后续。"""
+    if not (1 <= count <= 50):
+        raise ValueError("count must be in 1..50")
+
+    mail_client = make_free_mail_client()
+    succeeded = []
+    failed = []
+    for index in range(count):
+        logger.info("[Free] 批量进度 %d/%d", index + 1, count)
+        result = create_one_free_account(mail_client)
+        if result["status"] == "ok":
+            succeeded.append(result["email"])
+        else:
+            failed.append({"email": result.get("email"), "reason": result.get("reason")})
+
+    return {"count": count, "succeeded": succeeded, "failed": failed}
