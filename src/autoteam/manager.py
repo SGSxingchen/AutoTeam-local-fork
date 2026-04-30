@@ -795,6 +795,16 @@ _DIRECT_EMAIL_SELECTORS = (
 )
 _DIRECT_PASSWORD_SELECTORS = 'input[name="password"], input[type="password"]'
 _DIRECT_CODE_SELECTORS = 'input[name="code"], input[placeholder*="验证码"], input[placeholder*="code" i]'
+_DIRECT_PASSWORD_SUBMIT_LABELS = (
+    "Create account",
+    "创建账号",
+    "创建帐号",
+    "创建账户",
+    "创建帐户",
+    "Continue",
+    "继续",
+    "Log in",
+)
 
 
 def _safe_invite_screenshot(page, name):
@@ -811,6 +821,15 @@ def _page_excerpt(page, limit=240):
         return page.locator("body").inner_text(timeout=1500)[:limit].replace("\n", " ")
     except Exception:
         return ""
+
+
+def _submit_direct_password(page, pwd_input, password):
+    pwd_input.fill(password)
+    time.sleep(0.5)
+    clicked = _click_primary_auth_button(page, pwd_input, _DIRECT_PASSWORD_SUBMIT_LABELS)
+    if not clicked:
+        logger.warning("[直接注册] 密码提交按钮未找到/未点击 | URL: %s | body=%s", page.url, _page_excerpt(page))
+    return clicked
 
 
 def _quota_window_label(window: str | None) -> str:
@@ -1350,9 +1369,7 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
                     continue
 
                 logger.info("[直接注册] 设置密码")
-                pwd_input.fill(password)
-                time.sleep(0.5)
-                _click_primary_auth_button(page, pwd_input, ["Continue", "继续", "Log in"])
+                _submit_direct_password(page, pwd_input, password)
                 next_step = _wait_for_direct_step_change(page, "password", timeout=15)
                 logger.info("[直接注册] 提交密码后状态: %s | URL: %s", next_step, page.url)
 
