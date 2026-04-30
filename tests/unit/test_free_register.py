@@ -172,3 +172,73 @@ def test_batch_creation_aggregates_results(tmp_path, monkeypatch):
     assert result["succeeded"] == ["a@free.example.com", "c@free.example.com"]
     assert [f["email"] for f in result["failed"]] == ["b@free.example.com"]
     assert result["failed"][0]["reason"] == "register_failed_3x"
+
+
+def test_delete_full_cleans_cpa_auth_cloudmail_and_record(tmp_path, monkeypatch):
+    _patch_state(tmp_path, monkeypatch)
+
+    auth_file = tmp_path / "codex-a@free.example.com-free-x.json"
+    auth_file.write_text("{}")
+    free_accounts.save_free_accounts(
+        [
+            {
+                "email": "a@free.example.com",
+                "password": "pw",
+                "cloudmail_account_id": 99,
+                "auth_file": str(auth_file),
+                "plan_type": "free",
+                "created_at": 0,
+                "last_refreshed_at": None,
+                "last_error": None,
+            }
+        ]
+    )
+
+    deletions = []
+    monkeypatch.setattr(free_register, "delete_from_cpa", lambda name: deletions.append(name) or True)
+    mail_client = MagicMock()
+    monkeypatch.setattr(free_register, "make_free_mail_client", lambda: mail_client)
+
+    result = free_register.delete_free_account_full("a@free.example.com")
+
+    assert result["status"] == "ok"
+    assert deletions == [auth_file.name]
+    assert not auth_file.exists()
+    mail_client.delete_account.assert_called_once_with(99)
+    assert free_accounts.load_free_accounts() == []
+
+
+def test_delete_full_404_when_missing(tmp_path, monkeypatch):
+    _patch_state(tmp_path, monkeypatch)
+
+    result = free_register.delete_free_account_full("missing@x.com")
+    assert result["status"] == "not_found"
+
+
+def test_delete_full_idempotent_when_subresources_already_gone(tmp_path, monkeypatch):
+    _patch_state(tmp_path, monkeypatch)
+
+    free_accounts.save_free_accounts(
+        [
+            {
+                "email": "a@free.example.com",
+                "password": "pw",
+                "cloudmail_account_id": 99,
+                "auth_file": str(tmp_path / "missing.json"),
+                "plan_type": "free",
+                "created_at": 0,
+                "last_refreshed_at": None,
+                "last_error": None,
+            }
+        ]
+    )
+
+    monkeypatch.setattr(free_register, "delete_from_cpa", lambda name: False)
+    mail_client = MagicMock()
+    mail_client.delete_account.side_effect = RuntimeError("already gone")
+    monkeypatch.setattr(free_register, "make_free_mail_client", lambda: mail_client)
+
+    result = free_register.delete_free_account_full("a@free.example.com")
+
+    assert result["status"] == "ok"
+    assert free_accounts.load_free_accounts() == []

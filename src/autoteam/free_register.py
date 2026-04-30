@@ -5,12 +5,13 @@
 
 import logging
 import uuid
+from pathlib import Path
 
 from autoteam.cloudmail import CloudMailClient
 from autoteam.codex_auth import login_codex_via_browser, save_auth_file
 from autoteam.config import CLOUDMAIL_FREE_DOMAIN
-from autoteam.cpa_sync import upload_to_cpa
-from autoteam.free_accounts import add_free_account
+from autoteam.cpa_sync import delete_from_cpa, upload_to_cpa
+from autoteam.free_accounts import add_free_account, delete_free_account, find_free_account
 
 logger = logging.getLogger(__name__)
 
@@ -110,3 +111,33 @@ def create_free_accounts_batch(count):
             failed.append({"email": result.get("email"), "reason": result.get("reason")})
 
     return {"count": count, "succeeded": succeeded, "failed": failed}
+
+
+def delete_free_account_full(email):
+    """幂等删除：CPA → 本地 auth 文件 → CloudMail 邮箱 → free_accounts 记录。"""
+    acc = find_free_account(email)
+    if not acc:
+        return {"status": "not_found", "email": email}
+
+    auth_path_str = acc.get("auth_file")
+    if auth_path_str:
+        auth_path = Path(auth_path_str)
+        try:
+            delete_from_cpa(auth_path.name)
+        except Exception as exc:
+            logger.warning("[Free] CPA 删除失败 (忽略): %s (%s)", auth_path.name, exc)
+        try:
+            auth_path.unlink(missing_ok=True)
+        except Exception as exc:
+            logger.warning("[Free] auth 文件删除失败 (忽略): %s (%s)", auth_path, exc)
+
+    cloudmail_account_id = acc.get("cloudmail_account_id")
+    if cloudmail_account_id is not None:
+        try:
+            mail_client = make_free_mail_client()
+            mail_client.delete_account(cloudmail_account_id)
+        except Exception as exc:
+            logger.warning("[Free] CloudMail 删除失败 (忽略): %s (%s)", cloudmail_account_id, exc)
+
+    delete_free_account(email)
+    return {"status": "ok", "email": email}
