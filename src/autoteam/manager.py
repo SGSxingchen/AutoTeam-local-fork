@@ -22,6 +22,7 @@ import getpass
 import json
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -861,6 +862,46 @@ def _retry_direct_password_error(page, pwd_input):
     return clicked
 
 
+def _redact_direct_register_text(value, limit=600):
+    value = (value or "")[:limit]
+    return re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[email]", value)
+
+
+def _record_direct_register_response_diagnostic(diagnostics, response):
+    url = (getattr(response, "url", "") or "").split("?", 1)[0]
+    if "auth.openai.com" not in url and "chatgpt.com" not in url:
+        return False
+
+    request = getattr(response, "request", None)
+    method = (getattr(request, "method", "") or "").upper()
+    status = int(getattr(response, "status", 0) or 0)
+    if method not in {"POST", "PUT", "PATCH"} and status < 400:
+        return False
+    if len(diagnostics) >= 20:
+        return False
+
+    try:
+        body = response.text()
+    except Exception:
+        body = ""
+
+    diagnostics.append(
+        {
+            "method": method or "GET",
+            "status": status,
+            "url": url,
+            "body": _redact_direct_register_text(body),
+        }
+    )
+    return True
+
+
+def _format_direct_register_response_diagnostics(diagnostics):
+    if not diagnostics:
+        return "[]"
+    return json.dumps(diagnostics[-5:], ensure_ascii=False)
+
+
 def _quota_window_label(window: str | None) -> str:
     if window == "weekly":
         return "周"
@@ -1243,6 +1284,14 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
         browser = p.chromium.launch(**chromium_launch_kwargs())
         context = browser.new_context(**browser_context_kwargs())
         page = context.new_page()
+        direct_response_diagnostics = []
+        capture_direct_responses = False
+
+        def on_response(response):
+            if capture_direct_responses:
+                _record_direct_register_response_diagnostic(direct_response_diagnostics, response)
+
+        page.on("response", on_response)
 
         page.goto(signup_url, wait_until="domcontentloaded", timeout=60000)
         time.sleep(5)
@@ -1383,6 +1432,7 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
         _safe_invite_screenshot(page, "direct_03b_before_password.png")
 
         try:
+            capture_direct_responses = True
             for attempt in range(3):
                 if _detect_direct_register_step(page) != "password":
                     logger.info("[直接注册] 未检测到密码输入框，跳过")
@@ -1414,10 +1464,11 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
                 reason, excerpt = _direct_register_page_error(page)
                 if reason and attempt < 2:
                     logger.warning(
-                        "[直接注册] 密码提交后 OpenAI 返回错误: %s，尝试点击 Try Again/Retry... (attempt %d/3) | body=%s",
+                        "[直接注册] 密码提交后 OpenAI 返回错误: %s，尝试点击 Try Again/Retry... (attempt %d/3) | body=%s | responses=%s",
                         reason,
                         attempt + 1,
                         excerpt,
+                        _format_direct_register_response_diagnostics(direct_response_diagnostics),
                     )
                     retry_input = _first_visible_editable_locator(page, _DIRECT_PASSWORD_SELECTORS, timeout=600)
                     if retry_input and _retry_direct_password_error(page, retry_input):
@@ -1436,6 +1487,8 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
                         break
         except Exception as exc:
             logger.warning("[直接注册] 密码步骤异常: %s | URL: %s", exc, page.url)
+        finally:
+            capture_direct_responses = False
 
         _safe_invite_screenshot(page, "direct_04_after_password.png")
         current_step = _detect_direct_register_step(page)
@@ -1451,13 +1504,19 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
             reason, excerpt = _direct_register_page_error(page)
             if reason:
                 logger.warning(
-                    "[直接注册] 密码提交后 OpenAI 返回错误: %s | URL: %s | body=%s",
+                    "[直接注册] 密码提交后 OpenAI 返回错误: %s | URL: %s | body=%s | responses=%s",
                     reason,
                     page.url,
                     excerpt,
+                    _format_direct_register_response_diagnostics(direct_response_diagnostics),
                 )
             else:
-                logger.warning("[直接注册] 密码步骤未推进 | URL: %s | body=%s", page.url, excerpt)
+                logger.warning(
+                    "[直接注册] 密码步骤未推进 | URL: %s | body=%s | responses=%s",
+                    page.url,
+                    excerpt,
+                    _format_direct_register_response_diagnostics(direct_response_diagnostics),
+                )
             browser.close()
             return False
 

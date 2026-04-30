@@ -65,3 +65,29 @@ def test_direct_register_page_error_detects_openai_create_failure():
 
     assert reason == "failed_to_create_account"
     assert "Failed to create account" in excerpt
+
+
+def test_record_direct_register_response_diagnostic_redacts_email():
+    class Request:
+        method = "POST"
+
+    class Response:
+        url = "https://auth.openai.com/api/accounts/create?flow=signup"
+        status = 400
+        request = Request()
+
+        def text(self):
+            return '{"error":"blocked","email":"tmp-abc@sfacg.org"}'
+
+    diagnostics = []
+
+    assert manager._record_direct_register_response_diagnostic(diagnostics, Response()) is True
+
+    assert diagnostics == [
+        {
+            "method": "POST",
+            "status": 400,
+            "url": "https://auth.openai.com/api/accounts/create",
+            "body": '{"error":"blocked","email":"[email]"}',
+        }
+    ]
