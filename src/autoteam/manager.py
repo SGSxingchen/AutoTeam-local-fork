@@ -805,6 +805,13 @@ _DIRECT_PASSWORD_SUBMIT_LABELS = (
     "继续",
     "Log in",
 )
+_DIRECT_PASSWORD_RETRY_LABELS = (
+    "Try again",
+    "Retry",
+    "再试一次",
+    "重试",
+    *_DIRECT_PASSWORD_SUBMIT_LABELS,
+)
 
 
 def _safe_invite_screenshot(page, name):
@@ -841,6 +848,16 @@ def _submit_direct_password(page, pwd_input, password):
     clicked = _click_primary_auth_button(page, pwd_input, _DIRECT_PASSWORD_SUBMIT_LABELS)
     if not clicked:
         logger.warning("[直接注册] 密码提交按钮未找到/未点击 | URL: %s | body=%s", page.url, _page_excerpt(page))
+    return clicked
+
+
+def _retry_direct_password_error(page, pwd_input):
+    time.sleep(3)
+    clicked = _click_primary_auth_button(page, pwd_input, _DIRECT_PASSWORD_RETRY_LABELS)
+    if not clicked:
+        logger.warning(
+            "[直接注册] Try Again/Retry 按钮未找到/未点击 | URL: %s | body=%s", page.url, _page_excerpt(page)
+        )
     return clicked
 
 
@@ -1366,7 +1383,7 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
         _safe_invite_screenshot(page, "direct_03b_before_password.png")
 
         try:
-            for attempt in range(2):
+            for attempt in range(3):
                 if _detect_direct_register_step(page) != "password":
                     logger.info("[直接注册] 未检测到密码输入框，跳过")
                     break
@@ -1393,6 +1410,22 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
                     continue
                 if next_step != "password":
                     break
+
+                reason, excerpt = _direct_register_page_error(page)
+                if reason and attempt < 2:
+                    logger.warning(
+                        "[直接注册] 密码提交后 OpenAI 返回错误: %s，尝试点击 Try Again/Retry... (attempt %d/3) | body=%s",
+                        reason,
+                        attempt + 1,
+                        excerpt,
+                    )
+                    retry_input = _first_visible_editable_locator(page, _DIRECT_PASSWORD_SELECTORS, timeout=600)
+                    if retry_input and _retry_direct_password_error(page, retry_input):
+                        next_step = _wait_for_direct_step_change(page, "password", timeout=15)
+                        logger.info("[直接注册] Try Again/Retry 后状态: %s | URL: %s", next_step, page.url)
+                        if next_step != "password":
+                            break
+                    continue
 
                 pwd_input = _first_visible_editable_locator(page, _DIRECT_PASSWORD_SELECTORS, timeout=600)
                 if not pwd_input:

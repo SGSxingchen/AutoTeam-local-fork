@@ -28,6 +28,29 @@ def test_submit_direct_password_uses_create_account_label(monkeypatch):
     assert "Create account" in captured["labels"]
 
 
+def test_retry_direct_password_error_uses_try_again_label(monkeypatch):
+    captured = {}
+
+    def fake_click(page, field, labels):
+        captured["page"] = page
+        captured["field"] = field
+        captured["labels"] = labels
+        return True
+
+    page = object()
+    password_input = object()
+
+    monkeypatch.setattr(manager.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(manager, "_click_primary_auth_button", fake_click)
+
+    assert manager._retry_direct_password_error(page, password_input) is True
+
+    assert captured["page"] is page
+    assert captured["field"] is password_input
+    assert "Try again" in captured["labels"]
+    assert "Continue" in captured["labels"]
+
+
 def test_direct_register_page_error_detects_openai_create_failure():
     class Body:
         def inner_text(self, timeout=None):
