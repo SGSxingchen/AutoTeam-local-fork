@@ -12,6 +12,7 @@ session
 bearer_token
 test.py
 .env
+runtime_config.json
 web/node_modules/
 .claude/
 CLAUDE.md

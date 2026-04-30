@@ -8,8 +8,9 @@
       <div class="max-w-3xl space-y-3">
         <h2 class="text-lg font-semibold text-white">Free 账号注册未启用</h2>
         <p class="text-sm leading-6 text-slate-300">
-          请在 <code class="rounded bg-white/10 px-1.5 py-0.5">.env</code> 中配置
-          <code class="rounded bg-white/10 px-1.5 py-0.5">CLOUDMAIL_FREE_DOMAIN=@your-domain.com</code> 后重启服务。
+          请在 <code class="rounded bg-white/10 px-1.5 py-0.5">runtime_config.json</code> 中配置
+          <code class="rounded bg-white/10 px-1.5 py-0.5">{"CLOUDMAIL_FREE_DOMAIN":"@your-domain.com"}</code>，
+          新任务会立即使用新域名。
         </p>
         <p class="text-sm leading-6 text-amber-200">
           该域名必须与 <code class="rounded bg-white/10 px-1.5 py-0.5">CLOUDMAIL_DOMAIN</code>

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from autoteam.cloudmail import CloudMailClient
 from autoteam.codex_auth import login_codex_via_browser, save_auth_file
-from autoteam.config import CLOUDMAIL_FREE_DOMAIN
+from autoteam.config import get_cloudmail_free_domain
 from autoteam.cpa_sync import delete_from_cpa, upload_to_cpa
 from autoteam.free_accounts import add_free_account, delete_free_account, find_free_account, update_free_account
 
@@ -29,9 +29,10 @@ def _register_direct_once(*args, **kwargs):
 
 def make_free_mail_client():
     """创建带 Free 域名的 CloudMail 客户端；未配置时抛 RuntimeError。"""
-    if not CLOUDMAIL_FREE_DOMAIN:
+    domain = get_cloudmail_free_domain()
+    if not domain:
         raise RuntimeError("CLOUDMAIL_FREE_DOMAIN not configured")
-    client = CloudMailClient(domain=CLOUDMAIL_FREE_DOMAIN)
+    client = CloudMailClient(domain=domain)
     client.login()
     return client
 

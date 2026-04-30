@@ -14,6 +14,7 @@ cp .env.example .env
 | `CLOUDMAIL_EMAIL` | CloudMail 登录邮箱 | 是 |
 | `CLOUDMAIL_PASSWORD` | CloudMail 登录密码 | 是 |
 | `CLOUDMAIL_DOMAIN` | 临时邮箱域名（如 `@example.com`） | 是 |
+| `CLOUDMAIL_FREE_DOMAIN` | Free 注册专用临时邮箱域名（如 `@free-example.com`） | 否 |
 | `CPA_URL` | CLIProxyAPI 地址 | 是（留空使用默认 `http://127.0.0.1:8317`） |
 | `CPA_KEY` | CPA 管理密钥 | 是 |
 | `API_KEY` | Web 面板 / API 鉴权密钥 | 是（首次启动可自动生成） |
@@ -22,6 +23,35 @@ cp .env.example .env
 | `AUTO_CHECK_THRESHOLD` | 额度低于此百分比触发轮转 | 否（默认 `10`） |
 | `AUTO_CHECK_INTERVAL` | 巡检间隔（秒） | 否（默认 `300`） |
 | `AUTO_CHECK_MIN_LOW` | 至少几个账号低于阈值才触发 | 否（默认 `2`） |
+
+## 运行时配置
+
+需要频繁切换的 Free 域名和 Playwright 代理可以写入项目根目录的 `runtime_config.json`，无需重启服务。新建的后台任务会读取文件中的最新值；已经运行中的任务不受影响。
+
+```json
+{
+  "CLOUDMAIL_FREE_DOMAIN": "@example.com",
+  "PLAYWRIGHT_PROXY_URL": "socks5://host.docker.internal:1080",
+  "PLAYWRIGHT_PROXY_BYPASS": "localhost,127.0.0.1"
+}
+```
+
+支持热更新的键：
+
+- `CLOUDMAIL_FREE_DOMAIN`
+- `PLAYWRIGHT_PROXY_URL`
+- `PLAYWRIGHT_PROXY_BYPASS`
+
+`runtime_config.json` 中出现的键会覆盖 `.env`；没写的键继续使用 `.env`。如果要显式关闭 `.env` 中的代理，可以写 `"PLAYWRIGHT_PROXY_URL": ""`。
+
+也可以通过 API 修改：
+
+```bash
+curl -X PUT http://127.0.0.1:8787/api/config/runtime \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <API_KEY>' \
+  -d '{"CLOUDMAIL_FREE_DOMAIN":"@example.com"}'
+```
 
 ## Playwright 代理
 

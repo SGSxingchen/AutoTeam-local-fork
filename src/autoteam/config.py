@@ -64,6 +64,24 @@ PLAYWRIGHT_PROXY_PASSWORD = os.environ.get("PLAYWRIGHT_PROXY_PASSWORD", "").stri
 PLAYWRIGHT_PROXY_BYPASS = os.environ.get("PLAYWRIGHT_PROXY_BYPASS", "").strip()
 
 
+def get_cloudmail_free_domain() -> str:
+    from autoteam.runtime_config import get_runtime_value
+
+    return get_runtime_value("CLOUDMAIL_FREE_DOMAIN", CLOUDMAIL_FREE_DOMAIN).strip()
+
+
+def get_playwright_proxy_url() -> str:
+    from autoteam.runtime_config import get_runtime_value
+
+    return get_runtime_value("PLAYWRIGHT_PROXY_URL", PLAYWRIGHT_PROXY_URL).strip()
+
+
+def get_playwright_proxy_bypass() -> str:
+    from autoteam.runtime_config import get_runtime_value
+
+    return get_runtime_value("PLAYWRIGHT_PROXY_BYPASS", PLAYWRIGHT_PROXY_BYPASS).strip()
+
+
 def _format_proxy_host(hostname: str) -> str:
     if ":" in hostname and not hostname.startswith("["):
         return f"[{hostname}]"
@@ -98,10 +116,16 @@ def get_playwright_launch_options():
         "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox"],
     }
 
+    from autoteam.runtime_config import get_runtime_override
+
+    proxy_url_override = get_runtime_override("PLAYWRIGHT_PROXY_URL")
+    proxy_url = PLAYWRIGHT_PROXY_URL if proxy_url_override is None else proxy_url_override
+    proxy_bypass = get_playwright_proxy_bypass()
+
     proxy = None
-    if PLAYWRIGHT_PROXY_URL:
-        proxy = _parse_proxy_url(PLAYWRIGHT_PROXY_URL)
-    elif PLAYWRIGHT_PROXY_SERVER:
+    if proxy_url:
+        proxy = _parse_proxy_url(proxy_url)
+    elif proxy_url_override is None and PLAYWRIGHT_PROXY_SERVER:
         proxy = {"server": PLAYWRIGHT_PROXY_SERVER}
         if PLAYWRIGHT_PROXY_USERNAME:
             proxy["username"] = PLAYWRIGHT_PROXY_USERNAME
@@ -109,8 +133,8 @@ def get_playwright_launch_options():
             proxy["password"] = PLAYWRIGHT_PROXY_PASSWORD
 
     if proxy:
-        if PLAYWRIGHT_PROXY_BYPASS:
-            proxy["bypass"] = PLAYWRIGHT_PROXY_BYPASS
+        if proxy_bypass:
+            proxy["bypass"] = proxy_bypass
         options["proxy"] = proxy
 
     return options
