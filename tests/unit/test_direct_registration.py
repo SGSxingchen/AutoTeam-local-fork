@@ -26,3 +26,19 @@ def test_submit_direct_password_uses_create_account_label(monkeypatch):
     assert captured["page"] is page
     assert captured["field"] is password_input
     assert "Create account" in captured["labels"]
+
+
+def test_direct_register_page_error_detects_openai_create_failure():
+    class Body:
+        def inner_text(self, timeout=None):
+            return "Create a password\nFailed to create account. Please try again"
+
+    class Page:
+        def locator(self, selector):
+            assert selector == "body"
+            return Body()
+
+    reason, excerpt = manager._direct_register_page_error(Page())
+
+    assert reason == "failed_to_create_account"
+    assert "Failed to create account" in excerpt

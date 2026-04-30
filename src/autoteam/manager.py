@@ -823,6 +823,18 @@ def _page_excerpt(page, limit=240):
         return ""
 
 
+def _direct_register_page_error(page):
+    excerpt = _page_excerpt(page, limit=500)
+    normalized = excerpt.lower()
+    if "failed to create account" in normalized:
+        return "failed_to_create_account", excerpt
+    if "unable to create account" in normalized:
+        return "unable_to_create_account", excerpt
+    if "无法创建" in excerpt or "创建账号失败" in excerpt or "创建账户失败" in excerpt:
+        return "failed_to_create_account", excerpt
+    return None, excerpt
+
+
 def _submit_direct_password(page, pwd_input, password):
     pwd_input.fill(password)
     time.sleep(0.5)
@@ -1400,6 +1412,19 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
             return False
         if current_step == "email":
             logger.warning("[直接注册] 提交密码前流程回退到邮箱页 | URL: %s | body=%s", page.url, _page_excerpt(page))
+            browser.close()
+            return False
+        if current_step == "password":
+            reason, excerpt = _direct_register_page_error(page)
+            if reason:
+                logger.warning(
+                    "[直接注册] 密码提交后 OpenAI 返回错误: %s | URL: %s | body=%s",
+                    reason,
+                    page.url,
+                    excerpt,
+                )
+            else:
+                logger.warning("[直接注册] 密码步骤未推进 | URL: %s | body=%s", page.url, excerpt)
             browser.close()
             return False
 
