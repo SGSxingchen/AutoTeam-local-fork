@@ -1374,7 +1374,7 @@ def get_status():
 
     sanitized_accounts = [_sanitize_account(a, quota_cache.get(a.get("email"))) for a in accounts]
 
-    summary = _account_summary(accounts)
+    summary = _account_summary(sanitized_accounts)
 
     return {
         "accounts": sanitized_accounts,

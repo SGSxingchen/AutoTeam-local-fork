@@ -17,6 +17,7 @@ from autoteam.admin_state import (
     get_chatgpt_workspace_name,
     update_admin_state,
 )
+from autoteam.config import get_playwright_launch_options  # noqa: F401
 from autoteam.playwright_config import browser_context_kwargs, chromium_launch_kwargs
 from autoteam.textio import read_text
 
