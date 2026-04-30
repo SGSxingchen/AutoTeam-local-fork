@@ -64,6 +64,17 @@ def _screenshot(page, name):
     page.screenshot(path=str(SCREENSHOT_DIR / name), full_page=True)
 
 
+def _is_phone_verification_required(page_text):
+    text = (page_text or "").lower()
+    return (
+        "phone number required" in text
+        or "phone number is required" in text
+        or "please add a phone number" in text
+        or "手机号" in page_text
+        or "电话号码" in page_text
+    )
+
+
 def _build_auth_url(code_challenge, state):
     params = {
         "client_id": CODEX_CLIENT_ID,
@@ -611,6 +622,14 @@ def login_codex_via_browser(email, password, mail_client=None):
             # 在任何页面中，如果有 workspace/组织选择，先选 Team
             try:
                 page_text = page.inner_text("body")[:1000]
+                if _is_phone_verification_required(page_text):
+                    _screenshot(page, "codex_04_phone_required.png")
+                    logger.warning(
+                        "[Codex] OAuth 需要手机号验证，当前自动流程无法继续 | URL: %s | body=%s",
+                        page.url,
+                        page_text[:300].replace("\n", " "),
+                    )
+                    break
 
                 # 选择 Team workspace（用配置的名称精确匹配）
                 workspace_name = get_chatgpt_workspace_name()

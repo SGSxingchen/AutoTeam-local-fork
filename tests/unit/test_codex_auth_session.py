@@ -1,6 +1,17 @@
 from autoteam import codex_auth
 
 
+def test_codex_phone_verification_detection():
+    page_text = (
+        "Phone number required\n"
+        "To continue, please add a phone number. "
+        "We will send a one-time code to your number to verify."
+    )
+
+    assert codex_auth._is_phone_verification_required(page_text) is True
+    assert codex_auth._is_phone_verification_required("Continue with Codex") is False
+
+
 def test_login_codex_via_session_uses_unified_flow_and_returns_bundle(monkeypatch):
     events = []
 
