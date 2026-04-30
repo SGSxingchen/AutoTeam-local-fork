@@ -55,6 +55,7 @@ from autoteam.codex_auth import (
     refresh_access_token,
     save_auth_file,
 )
+from autoteam.config import CLOUDMAIL_FREE_DOMAIN
 from autoteam.cpa_sync import sync_from_cpa, sync_main_codex_to_cpa, sync_to_cpa
 from autoteam.playwright_config import browser_context_kwargs, chromium_launch_kwargs
 from autoteam.textio import read_text, write_text
@@ -1890,6 +1891,29 @@ def cmd_manual_add():
         flow.stop()
 
 
+def cmd_add_free(count):
+    """批量注册 Free 账号（使用 CLOUDMAIL_FREE_DOMAIN 域名）。"""
+    if not CLOUDMAIL_FREE_DOMAIN:
+        logger.error("[Free] 未配置 CLOUDMAIL_FREE_DOMAIN，无法启用 Free 注册")
+        sys.exit(1)
+    if not (1 <= count <= 50):
+        logger.error("[Free] count 需在 1..50 范围内，收到 %s", count)
+        sys.exit(1)
+
+    from autoteam.cpa_sync import sync_to_cpa
+    from autoteam.free_register import create_free_accounts_batch
+
+    result = create_free_accounts_batch(count)
+    sync_to_cpa()
+    logger.info(
+        "[Free] 完成: 成功 %d, 失败 %d (%s)",
+        len(result["succeeded"]),
+        len(result["failed"]),
+        ", ".join(f"{item['email']}:{item['reason']}" for item in result["failed"]) or "无失败",
+    )
+    return result
+
+
 def cmd_admin_login(email=None):
     """交互式完成管理员登录并保存到 state.json。"""
     email = (email or "").strip()
@@ -2417,6 +2441,8 @@ def main():
     rotate_p.add_argument("target", type=int, nargs="?", default=5, help="目标成员数（默认 5）")
     sub.add_parser("add", help="手动添加一个新账号")
     sub.add_parser("manual-add", help="手动 OAuth 添加账号（打开链接登录后粘贴回调 URL）")
+    add_free_p = sub.add_parser("add-free", help="批量注册 Free 账号（独立域名，不参与轮转）")
+    add_free_p.add_argument("count", type=int, nargs="?", default=1, help="数量（默认 1，最大 50）")
     admin_login_p = sub.add_parser("admin-login", help="交互式完成管理员主号登录")
     admin_login_p.add_argument("--email", help="管理员邮箱；不传则运行时交互输入")
     admin_session_p = sub.add_parser("admin-session", help="手动输入 session_token 导入管理员登录态")
@@ -2469,6 +2495,8 @@ def main():
         cmd_add()
     elif args.command == "manual-add":
         cmd_manual_add()
+    elif args.command == "add-free":
+        cmd_add_free(args.count)
     elif args.command == "admin-login":
         cmd_admin_login(args.email)
     elif args.command == "admin-session":

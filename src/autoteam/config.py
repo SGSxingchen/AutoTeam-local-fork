@@ -33,6 +33,8 @@ CLOUDMAIL_BASE_URL = os.environ.get("CLOUDMAIL_BASE_URL", "")
 CLOUDMAIL_EMAIL = os.environ.get("CLOUDMAIL_EMAIL", "")
 CLOUDMAIL_PASSWORD = os.environ.get("CLOUDMAIL_PASSWORD", "")
 CLOUDMAIL_DOMAIN = os.environ.get("CLOUDMAIL_DOMAIN", "")
+# Free 注册专用域名（必须与 CLOUDMAIL_DOMAIN 不同；空字符串 = Free 功能不可用）
+CLOUDMAIL_FREE_DOMAIN = os.environ.get("CLOUDMAIL_FREE_DOMAIN", "")
 
 # ChatGPT Team 配置
 CHATGPT_ACCOUNT_ID = os.environ.get("CHATGPT_ACCOUNT_ID", "")

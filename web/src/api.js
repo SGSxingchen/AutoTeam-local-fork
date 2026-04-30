@@ -55,6 +55,10 @@ export const api = {
   getCodexAuth: (email) => request('GET', `/accounts/${encodeURIComponent(email)}/codex-auth`),
   kickAccount: (email) => request('POST', `/accounts/${encodeURIComponent(email)}/kick`),
   getCpaFiles: () => request('GET', '/cpa/files'),
+  listFreeAccounts: () => request('GET', '/free/accounts'),
+  createFreeAccounts: (count) => request('POST', '/free/accounts', { count }),
+  deleteFreeAccount: (email) => request('DELETE', `/free/accounts/${encodeURIComponent(email)}`),
+  refreshFreeAccount: (email) => request('POST', `/free/accounts/${encodeURIComponent(email)}/refresh`),
 
   startAdminLogin: (email) => request('POST', '/admin/login/start', { email }),
   submitAdminSession: (email, sessionToken) => request('POST', '/admin/login/session', { email, session_token: sessionToken }),
