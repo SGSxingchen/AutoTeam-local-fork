@@ -1,4 +1,5 @@
 import json
+import logging
 
 from autoteam import config, runtime_config
 
@@ -72,3 +73,46 @@ def test_runtime_config_write_is_atomic_and_preserves_existing_keys(tmp_path, mo
         "PLAYWRIGHT_PROXY_BYPASS": "localhost,127.0.0.1",
     }
     assert json.loads(runtime_file.read_text(encoding="utf-8")) == saved
+
+
+def test_playwright_launch_options_logs_masked_proxy(tmp_path, monkeypatch, caplog):
+    runtime_file = tmp_path / "runtime_config.json"
+    runtime_file.write_text(
+        json.dumps(
+            {
+                "PLAYWRIGHT_PROXY_URL": "http://user:secret@proxy.example.com:8080",
+                "PLAYWRIGHT_PROXY_BYPASS": "localhost,127.0.0.1",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(runtime_config, "RUNTIME_CONFIG_FILE", runtime_file)
+    monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_URL", "")
+    monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_SERVER", "")
+    monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_BYPASS", "")
+
+    with caplog.at_level(logging.INFO, logger="autoteam.config"):
+        config.get_playwright_launch_options()
+
+    assert (
+        "[Playwright] 使用代理: server=http://proxy.example.com:8080 auth=enabled bypass=localhost,127.0.0.1"
+        in caplog.text
+    )
+    assert "secret" not in caplog.text
+    assert "user:secret" not in caplog.text
+
+
+def test_playwright_launch_options_logs_direct_connection(tmp_path, monkeypatch, caplog):
+    runtime_file = tmp_path / "runtime_config.json"
+    runtime_file.write_text(json.dumps({"PLAYWRIGHT_PROXY_URL": ""}), encoding="utf-8")
+
+    monkeypatch.setattr(runtime_config, "RUNTIME_CONFIG_FILE", runtime_file)
+    monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_URL", "")
+    monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_SERVER", "")
+    monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_BYPASS", "")
+
+    with caplog.at_level(logging.INFO, logger="autoteam.config"):
+        config.get_playwright_launch_options()
+
+    assert "[Playwright] 未使用代理" in caplog.text

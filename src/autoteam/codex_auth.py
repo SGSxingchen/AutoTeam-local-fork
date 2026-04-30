@@ -277,6 +277,7 @@ def login_codex_via_browser(email, password, mail_client=None):
     logger.info("[Codex] 开始 OAuth 登录: %s", email)
 
     auth_code = None
+    phone_verification_required = False
 
     with sync_playwright() as p:
         browser = p.chromium.launch(**chromium_launch_kwargs())
@@ -623,6 +624,7 @@ def login_codex_via_browser(email, password, mail_client=None):
             try:
                 page_text = page.inner_text("body")[:1000]
                 if _is_phone_verification_required(page_text):
+                    phone_verification_required = True
                     _screenshot(page, "codex_04_phone_required.png")
                     logger.warning(
                         "[Codex] OAuth 需要手机号验证，当前自动流程无法继续 | URL: %s | body=%s",
@@ -895,7 +897,10 @@ def login_codex_via_browser(email, password, mail_client=None):
         browser.close()
 
     if not auth_code:
-        logger.error("[Codex] OAuth 登录失败: 未获取到 authorization code")
+        if phone_verification_required:
+            logger.error("[Codex] OAuth 登录失败: 需要手机号验证，无法自动获取 authorization code")
+        else:
+            logger.error("[Codex] OAuth 登录失败: 未获取到 authorization code")
         return None
 
     return _exchange_auth_code(auth_code, code_verifier, fallback_email=email)

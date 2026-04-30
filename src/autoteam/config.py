@@ -1,5 +1,6 @@
 """配置文件 - 从 .env 文件或环境变量加载"""
 
+import logging
 import os
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -8,6 +9,7 @@ from autoteam.textio import parse_env_line, parse_env_value, read_text
 
 # 项目根目录（pyproject.toml 所在位置）
 PROJECT_ROOT = Path(__file__).parent.parent.parent
+logger = logging.getLogger(__name__)
 
 # 加载 .env 文件（从项目根目录）
 _env_file = PROJECT_ROOT / ".env"
@@ -136,5 +138,13 @@ def get_playwright_launch_options():
         if proxy_bypass:
             proxy["bypass"] = proxy_bypass
         options["proxy"] = proxy
+        logger.info(
+            "[Playwright] 使用代理: server=%s auth=%s bypass=%s",
+            proxy.get("server", ""),
+            "enabled" if proxy.get("username") or proxy.get("password") else "disabled",
+            proxy.get("bypass", ""),
+        )
+    else:
+        logger.info("[Playwright] 未使用代理")
 
     return options
