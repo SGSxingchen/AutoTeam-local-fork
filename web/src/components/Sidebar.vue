@@ -170,6 +170,13 @@ const items = [
     iconPath: 'M4 7.5 12 4l8 3.5-8 3.5L4 7.5Zm0 4L12 15l8-3.5M4 15.5 12 19l8-3.5',
   },
   {
+    key: 'free',
+    label: 'Free 账号',
+    mobileLabel: 'Free',
+    copy: '独立域名注册的 Free 账号管理',
+    iconPath: 'M12 4v16M4 12h16',
+  },
+  {
     key: 'sync',
     label: '同步中心',
     mobileLabel: '同步',

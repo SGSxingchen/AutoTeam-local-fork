@@ -203,6 +203,8 @@
               @refresh="refresh"
             />
 
+            <FreePage v-else-if="currentPage === 'free'" />
+
             <SyncPage
               v-else-if="currentPage === 'sync'"
               :running-task="busyTask"
@@ -245,6 +247,7 @@ import Sidebar from './components/Sidebar.vue'
 import Dashboard from './components/Dashboard.vue'
 import TeamMembers from './components/TeamMembers.vue'
 import PoolPage from './components/PoolPage.vue'
+import FreePage from './components/FreePage.vue'
 import SyncPage from './components/SyncPage.vue'
 import TaskHistoryPage from './components/TaskHistoryPage.vue'
 import LogViewer from './components/LogViewer.vue'
