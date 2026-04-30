@@ -4,6 +4,7 @@
 """
 
 import logging
+import time
 import uuid
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from autoteam.cloudmail import CloudMailClient
 from autoteam.codex_auth import login_codex_via_browser, save_auth_file
 from autoteam.config import CLOUDMAIL_FREE_DOMAIN
 from autoteam.cpa_sync import delete_from_cpa, upload_to_cpa
-from autoteam.free_accounts import add_free_account, delete_free_account, find_free_account
+from autoteam.free_accounts import add_free_account, delete_free_account, find_free_account, update_free_account
 
 logger = logging.getLogger(__name__)
 
@@ -141,3 +142,34 @@ def delete_free_account_full(email):
 
     delete_free_account(email)
     return {"status": "ok", "email": email}
+
+
+def refresh_codex(email):
+    """重跑 Codex OAuth → 覆盖 auth → 重传 CPA → 更新记录。"""
+    acc = find_free_account(email)
+    if not acc:
+        return {"status": "not_found", "email": email}
+
+    mail_client = make_free_mail_client()
+    bundle = login_codex_via_browser(acc["email"], acc["password"], mail_client=mail_client)
+    if not bundle:
+        update_free_account(email, last_error="codex_oauth_failed")
+        return {"status": "failed", "email": email, "reason": "codex_oauth_failed"}
+
+    if bundle.get("plan_type") != "free":
+        update_free_account(email, last_error="plan_type_mismatch")
+        return {"status": "failed", "email": email, "reason": "plan_type_mismatch"}
+
+    new_path = save_auth_file(bundle)
+    try:
+        upload_to_cpa(new_path)
+    except Exception as exc:
+        logger.warning("[Free] 刷新后 CPA 上传失败 (保留本地): %s (%s)", email, exc)
+
+    update_free_account(
+        email,
+        auth_file=str(new_path),
+        last_refreshed_at=time.time(),
+        last_error=None,
+    )
+    return {"status": "ok", "email": email, "auth_file": str(new_path)}
