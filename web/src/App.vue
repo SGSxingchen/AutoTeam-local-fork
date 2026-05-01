@@ -233,6 +233,7 @@
               :codex-status="codexStatus"
               @refresh="refresh"
               @admin-progress="onAdminProgress"
+              @navigate="navigate"
             />
           </main>
         </Transition>

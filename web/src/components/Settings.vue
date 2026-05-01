@@ -353,6 +353,36 @@
         {{ runtimeMessage }}
       </div>
 
+      <div class="mb-4 rounded-lg border border-gray-800 bg-gray-950/50 p-3">
+        <div class="mb-2 flex items-center justify-between gap-2">
+          <label class="block text-sm text-gray-300">Free 注册邮箱提供商</label>
+          <span class="text-[11px] text-gray-500">{{ runtimeSources.MAIL_PROVIDER || 'env' }}</span>
+        </div>
+        <div class="flex flex-wrap items-center gap-4">
+          <label class="flex items-center gap-2 text-sm text-gray-200">
+            <input type="radio" value="cloudmail" v-model="runtimeForm.MAIL_PROVIDER" />
+            <span>CloudMail</span>
+          </label>
+          <label class="flex items-center gap-2 text-sm text-gray-200">
+            <input type="radio" value="outlook" v-model="runtimeForm.MAIL_PROVIDER" />
+            <span>Outlook</span>
+            <a
+              class="text-xs text-cyan-300 underline"
+              href="#"
+              @click.prevent="$emit('navigate', 'mail-pool')"
+            >
+              (池可用 {{ outlookStats.available }} 个)
+            </a>
+          </label>
+        </div>
+        <p
+          v-if="runtimeForm.MAIL_PROVIDER === 'outlook' && outlookStats.available === 0"
+          class="mt-2 text-sm text-rose-300"
+        >
+          ⚠ Outlook 池为空,请先在「邮箱池」页导入。
+        </p>
+      </div>
+
       <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div>
           <div class="mb-1 flex items-center justify-between gap-2">
@@ -476,7 +506,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['refresh', 'admin-progress'])
+const emit = defineEmits(['refresh', 'admin-progress', 'navigate'])
 
 const form = ref({ interval: 5, threshold: 10, min_low: 2 })
 const saving = ref(false)
@@ -485,7 +515,9 @@ const runtimeForm = ref({
   CLOUDMAIL_FREE_DOMAIN: '',
   PLAYWRIGHT_PROXY_URL: '',
   PLAYWRIGHT_PROXY_BYPASS: '',
+  MAIL_PROVIDER: 'cloudmail',
 })
+const outlookStats = ref({ total: 0, available: 0, in_use: 0, used: 0, error: 0 })
 const runtimeLoadedForm = ref({ ...runtimeForm.value })
 const runtimeSources = ref({})
 const runtimePath = ref('')
@@ -553,6 +585,7 @@ watch(
 
 onMounted(async () => {
   await loadRuntimeConfig()
+  await loadOutlookStats()
   try {
     const cfg = await api.getAutoCheckConfig()
     form.value = {
@@ -593,11 +626,20 @@ function applyRuntimeConfig(data) {
     CLOUDMAIL_FREE_DOMAIN: effective.CLOUDMAIL_FREE_DOMAIN || '',
     PLAYWRIGHT_PROXY_URL: effective.PLAYWRIGHT_PROXY_URL || '',
     PLAYWRIGHT_PROXY_BYPASS: effective.PLAYWRIGHT_PROXY_BYPASS || '',
+    MAIL_PROVIDER: effective.MAIL_PROVIDER || 'cloudmail',
   }
   runtimeForm.value = next
   runtimeLoadedForm.value = { ...next }
   runtimeSources.value = data?.sources || {}
   runtimePath.value = data?.path || ''
+}
+
+async function loadOutlookStats() {
+  try {
+    outlookStats.value = await api.outlookPoolStats()
+  } catch (e) {
+    // 后端未启用或暂时不可用,保持默认 0
+  }
 }
 
 async function loadRuntimeConfig() {
