@@ -1,8 +1,6 @@
 """CloudMail API 客户端 - 管理临时邮箱和读取邮件"""
 
-import html
 import logging
-import re
 import time
 import uuid
 
@@ -16,13 +14,10 @@ from autoteam.config import (
     EMAIL_POLL_INTERVAL,
     EMAIL_POLL_TIMEOUT,
 )
+from autoteam.mail_utils import extract_invite_link as _extract_invite_link
+from autoteam.mail_utils import extract_verification_code as _extract_verification_code
 
 logger = logging.getLogger(__name__)
-
-_VERIFICATION_CODE_PATTERNS = (
-    r"(?:temporary\s+(?:openai|chatgpt)\s+login\s+code(?:\s+is)?|verification\s+code(?:\s+is)?|login\s+code(?:\s+is)?|code(?:\s+is)?|验证码(?:为|是)?)\D{0,24}(\d{6})",
-    r"\b(\d{6})\b",
-)
 
 
 class CloudMailClient:
@@ -104,42 +99,8 @@ class CloudMailClient:
     def _normalize_email(value):
         return str(value or "").strip().lower()
 
-    @staticmethod
-    def _html_to_visible_text(value):
-        content = str(value or "")
-        if not content:
-            return ""
-
-        content = re.sub(r"(?is)<(script|style)\b.*?>.*?</\1>", " ", content)
-        content = re.sub(r"(?is)<!--.*?-->", " ", content)
-        content = re.sub(r"(?i)<br\\s*/?>", "\n", content)
-        content = re.sub(r"(?i)</(?:p|div|tr|table|h[1-6]|li|td|section|article)>", "\n", content)
-        content = re.sub(r"(?s)<[^>]+>", " ", content)
-        content = html.unescape(content)
-        content = re.sub(r"[\t\r\f\v ]+", " ", content)
-        content = re.sub(r"\n\s+", "\n", content)
-        content = re.sub(r"\n{2,}", "\n", content)
-        return content.strip()
-
     def extract_verification_code(self, email_data):
-        """从邮件正文中提取 6 位验证码，优先解析可见文本，避免误取 HTML/CSS 中的颜色值。"""
-        sources = []
-
-        plain_text = str(email_data.get("text") or "").strip()
-        if plain_text:
-            sources.append(plain_text)
-
-        html_text = self._html_to_visible_text(email_data.get("content"))
-        if html_text and html_text not in sources:
-            sources.append(html_text)
-
-        for source in sources:
-            for pattern in _VERIFICATION_CODE_PATTERNS:
-                match = re.search(pattern, source, re.IGNORECASE)
-                if match:
-                    return match.group(1)
-
-        return None
+        return _extract_verification_code(email_data)
 
     def _resolve_account_id_for_email(self, to_email):
         """优先从本地账号池解析 CloudMail accountId。"""
@@ -294,33 +255,10 @@ class CloudMailClient:
         raise TimeoutError("等待邮件超时")
 
     def extract_invite_link(self, email_data):
-        """从 OpenAI 邀请邮件中提取邀请链接"""
-        html = email_data.get("content", "")
-        text = email_data.get("text", "")
-
-        # 从 HTML 中提取 href 链接（最可靠）
-        links = re.findall(r'href="(https://chatgpt\.com/auth/login\?[^"]*)"', html)
-        if links:
-            link = links[0]
+        link = _extract_invite_link(email_data)
+        if link:
             logger.info("[CloudMail] 提取到邀请链接: %s...", link[:80])
-            return link
-
-        # 从纯文本中提取
-        links = re.findall(r'(https://chatgpt\.com/auth/login\?[^\s<>"\']+)', text)
-        if links:
-            link = links[0]
-            logger.info("[CloudMail] 提取到邀请链接: %s...", link[:80])
-            return link
-
-        # 通用链接提取
-        link_pattern = r'https?://[^\s<>"\']+(?:invite|accept|join|workspace)[^\s<>"\']*'
-        match = re.search(link_pattern, html or text, re.IGNORECASE)
-        if match:
-            link = match.group(0)
-            logger.info("[CloudMail] 提取到链接: %s...", link[:80])
-            return link
-
-        return None
+        return link
 
     def delete_emails_for(self, to_email):
         """删除指定收件人的所有邮件"""
