@@ -37,6 +37,7 @@ CLOUDMAIL_PASSWORD = os.environ.get("CLOUDMAIL_PASSWORD", "")
 CLOUDMAIL_DOMAIN = os.environ.get("CLOUDMAIL_DOMAIN", "")
 # Free 注册专用域名（必须与 CLOUDMAIL_DOMAIN 不同；空字符串 = Free 功能不可用）
 CLOUDMAIL_FREE_DOMAIN = os.environ.get("CLOUDMAIL_FREE_DOMAIN", "")
+MAIL_PROVIDER = os.environ.get("MAIL_PROVIDER", "cloudmail").strip().lower()
 
 # ChatGPT Team 配置
 CHATGPT_ACCOUNT_ID = os.environ.get("CHATGPT_ACCOUNT_ID", "")
@@ -70,24 +71,34 @@ PLAYWRIGHT_PROXY_SERVER = os.environ.get("PLAYWRIGHT_PROXY_SERVER", "").strip()
 PLAYWRIGHT_PROXY_USERNAME = os.environ.get("PLAYWRIGHT_PROXY_USERNAME", "").strip()
 PLAYWRIGHT_PROXY_PASSWORD = os.environ.get("PLAYWRIGHT_PROXY_PASSWORD", "").strip()
 PLAYWRIGHT_PROXY_BYPASS = os.environ.get("PLAYWRIGHT_PROXY_BYPASS", "").strip()
+FREE_PLAYWRIGHT_PROXY_URL = os.environ.get("FREE_PLAYWRIGHT_PROXY_URL", "").strip()
+FREE_PLAYWRIGHT_PROXY_BYPASS = os.environ.get("FREE_PLAYWRIGHT_PROXY_BYPASS", "").strip()
 
 
 def get_cloudmail_free_domain() -> str:
-    from autoteam.runtime_config import get_runtime_value
-
-    return get_runtime_value("CLOUDMAIL_FREE_DOMAIN", CLOUDMAIL_FREE_DOMAIN).strip()
+    return CLOUDMAIL_FREE_DOMAIN.strip()
 
 
 def get_playwright_proxy_url() -> str:
-    from autoteam.runtime_config import get_runtime_value
-
-    return get_runtime_value("PLAYWRIGHT_PROXY_URL", PLAYWRIGHT_PROXY_URL).strip()
+    return PLAYWRIGHT_PROXY_URL.strip()
 
 
 def get_playwright_proxy_bypass() -> str:
-    from autoteam.runtime_config import get_runtime_value
+    return PLAYWRIGHT_PROXY_BYPASS.strip()
 
-    return get_runtime_value("PLAYWRIGHT_PROXY_BYPASS", PLAYWRIGHT_PROXY_BYPASS).strip()
+
+def get_free_playwright_proxy_url() -> str:
+    return FREE_PLAYWRIGHT_PROXY_URL.strip()
+
+
+def get_free_playwright_proxy_bypass() -> str:
+    return FREE_PLAYWRIGHT_PROXY_BYPASS.strip()
+
+
+def get_mail_provider() -> str:
+    if MAIL_PROVIDER not in {"cloudmail", "outlook"}:
+        return "cloudmail"
+    return MAIL_PROVIDER
 
 
 def _format_proxy_host(hostname: str) -> str:
@@ -117,20 +128,16 @@ def _parse_proxy_url(proxy_url: str):
     return proxy
 
 
-def get_playwright_launch_options(*, use_runtime_proxy: bool = False):
+def get_playwright_launch_options(*, use_free_proxy: bool = False):
     """统一的 Playwright Chromium 启动参数。"""
     options = {
         "headless": PLAYWRIGHT_HEADLESS,
         "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox"],
     }
 
-    proxy_url_override = None
-    if use_runtime_proxy:
-        from autoteam.runtime_config import get_runtime_override
-
-        proxy_url_override = get_runtime_override("PLAYWRIGHT_PROXY_URL")
-        proxy_url = PLAYWRIGHT_PROXY_URL if proxy_url_override is None else proxy_url_override
-        proxy_bypass = get_playwright_proxy_bypass()
+    if use_free_proxy:
+        proxy_url = FREE_PLAYWRIGHT_PROXY_URL
+        proxy_bypass = FREE_PLAYWRIGHT_PROXY_BYPASS
     else:
         proxy_url = PLAYWRIGHT_PROXY_URL
         proxy_bypass = PLAYWRIGHT_PROXY_BYPASS
@@ -138,7 +145,7 @@ def get_playwright_launch_options(*, use_runtime_proxy: bool = False):
     proxy = None
     if proxy_url:
         proxy = _parse_proxy_url(proxy_url)
-    elif proxy_url_override is None and PLAYWRIGHT_PROXY_SERVER:
+    elif not use_free_proxy and PLAYWRIGHT_PROXY_SERVER:
         proxy = {"server": PLAYWRIGHT_PROXY_SERVER}
         if PLAYWRIGHT_PROXY_USERNAME:
             proxy["username"] = PLAYWRIGHT_PROXY_USERNAME

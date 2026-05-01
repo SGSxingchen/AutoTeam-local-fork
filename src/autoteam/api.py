@@ -3,6 +3,9 @@
 import json
 import logging
 import os
+import re
+import shlex
+import subprocess
 import threading
 import time
 import uuid
@@ -11,7 +14,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from autoteam.config import API_KEY, get_cloudmail_free_domain, get_playwright_proxy_bypass, get_playwright_proxy_url
 from autoteam.textio import read_text
@@ -475,6 +478,10 @@ class RuntimeConfigUpdate(BaseModel):
 
 class OutlookImportRequest(BaseModel):
     text: str
+
+
+class EnvConfigUpdate(BaseModel):
+    values: dict[str, str | None] = Field(default_factory=dict)
 
 
 class AdminEmailParams(BaseModel):
@@ -1679,6 +1686,7 @@ def _runtime_config_response():
         "CLOUDMAIL_FREE_DOMAIN": get_cloudmail_free_domain(),
         "PLAYWRIGHT_PROXY_URL": get_playwright_proxy_url(),
         "PLAYWRIGHT_PROXY_BYPASS": get_playwright_proxy_bypass(),
+        "MAIL_PROVIDER": runtime_config.get_mail_provider(),
     }
     return {
         "path": str(runtime_config.RUNTIME_CONFIG_FILE),
@@ -1706,6 +1714,104 @@ def put_runtime_config(config: RuntimeConfigUpdate):
 
 
 # ---------------------------------------------------------------------------
+# .env 配置
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/config/env")
+def get_env_config():
+    from autoteam import env_config
+
+    return env_config.get_env_config()
+
+
+@app.put("/api/config/env")
+def put_env_config(config: EnvConfigUpdate):
+    from autoteam import env_config
+
+    try:
+        result = env_config.save_env_values(config.values)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=f"unsupported env key: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    env_config.reload_config_modules()
+    global API_KEY
+    from autoteam.config import API_KEY as _fresh_key
+
+    API_KEY = _fresh_key or os.environ.get("API_KEY", "")
+    _apply_hot_env_updates(result["updated_keys"])
+    return {**result, "config": env_config.get_env_config()}
+
+
+def _int_env_value(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)) or default)
+    except ValueError:
+        return default
+
+
+def _apply_hot_env_updates(updated_keys: list[str]) -> None:
+    if not {"AUTO_CHECK_INTERVAL", "AUTO_CHECK_THRESHOLD", "AUTO_CHECK_MIN_LOW"}.intersection(updated_keys):
+        return
+
+    cfg = globals().get("_auto_check_config")
+    if not isinstance(cfg, dict):
+        return
+
+    cfg["interval"] = max(60, _int_env_value("AUTO_CHECK_INTERVAL", 300))
+    cfg["threshold"] = max(1, min(100, _int_env_value("AUTO_CHECK_THRESHOLD", 10)))
+    cfg["min_low"] = max(1, _int_env_value("AUTO_CHECK_MIN_LOW", 2))
+    restart_event = globals().get("_auto_check_restart")
+    if restart_event is not None:
+        restart_event.set()
+    logger.info(
+        "[巡检] 配置已从 .env 更新: 间隔=%ds 阈值=%d%% 触发=%d个",
+        cfg["interval"],
+        cfg["threshold"],
+        cfg["min_low"],
+    )
+
+
+def _detect_systemd_service() -> str:
+    configured = os.environ.get("AUTOTEAM_SYSTEMD_SERVICE", "").strip()
+    if configured:
+        return configured
+    try:
+        text = Path("/proc/self/cgroup").read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    match = re.search(r"([^/\s]+\.service)(?:/|$)", text)
+    return match.group(1) if match else ""
+
+
+def _schedule_restart():
+    service = _detect_systemd_service()
+    if service:
+        command = f"sleep 1; systemctl restart {shlex.quote(service)}"
+        subprocess.Popen(
+            ["sh", "-c", command],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return {"scheduled": True, "mode": "systemd", "service": service}
+
+    def _exit_later():
+        time.sleep(1)
+        os._exit(3)
+
+    threading.Thread(target=_exit_later, daemon=True).start()
+    return {"scheduled": True, "mode": "process-exit"}
+
+
+@app.post("/api/system/restart", status_code=202)
+def post_system_restart():
+    return _schedule_restart()
+
+
+# ---------------------------------------------------------------------------
 # Free 账号管理
 # ---------------------------------------------------------------------------
 
@@ -1720,11 +1826,17 @@ def _free_disabled_response():
     )
 
 
+def _free_registration_enabled() -> bool:
+    from autoteam.runtime_config import get_mail_provider
+
+    return get_mail_provider() == "outlook" or bool(get_cloudmail_free_domain())
+
+
 @app.get("/api/free/accounts")
 def get_free_accounts():
     from autoteam.free_accounts import load_free_accounts
 
-    if not get_cloudmail_free_domain():
+    if not _free_registration_enabled():
         return {"enabled": False, "reason": "CLOUDMAIL_FREE_DOMAIN not set", "accounts": []}
 
     accounts = []
@@ -1745,7 +1857,7 @@ def get_free_accounts():
 
 @app.post("/api/free/accounts", status_code=202)
 def post_free_accounts(params: FreeCreateParams):
-    if not get_cloudmail_free_domain():
+    if not _free_registration_enabled():
         _free_disabled_response()
     if not (1 <= params.count <= 50):
         raise HTTPException(status_code=400, detail="count must be in 1..50")
@@ -1758,7 +1870,7 @@ def post_free_accounts(params: FreeCreateParams):
 
 @app.delete("/api/free/accounts/{email}", status_code=202)
 def delete_free_account_endpoint(email: str):
-    if not get_cloudmail_free_domain():
+    if not _free_registration_enabled():
         _free_disabled_response()
 
     from autoteam.free_register import delete_free_account_full
@@ -1769,7 +1881,7 @@ def delete_free_account_endpoint(email: str):
 
 @app.post("/api/free/accounts/{email}/refresh", status_code=202)
 def post_free_account_refresh(email: str):
-    if not get_cloudmail_free_domain():
+    if not _free_registration_enabled():
         _free_disabled_response()
 
     from autoteam.free_register import refresh_codex

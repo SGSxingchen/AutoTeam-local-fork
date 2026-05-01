@@ -341,151 +341,155 @@
     <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <div class="flex flex-col gap-2 mb-4 md:flex-row md:items-start md:justify-between">
         <div>
-          <h2 class="text-lg font-semibold text-white">运行时配置</h2>
+          <h2 class="text-lg font-semibold text-white">环境变量配置</h2>
           <p class="text-sm text-gray-400 mt-1">
-            Free 域名和 Free 浏览器代理保存到 runtime_config.json；Team 轮转和管理员流程不使用这里的代理。
+            统一保存到 .env。巡检字段会立即同步到后台线程；其他标记字段保存后可通过这里重启服务，让新配置完整生效。
           </p>
         </div>
-        <span v-if="runtimeSaved" class="text-xs text-green-400 transition">已保存</span>
+        <span v-if="envSaved" class="text-xs text-green-400 transition">已保存</span>
       </div>
 
-      <div v-if="runtimeMessage" class="mb-4 px-4 py-3 rounded-lg text-sm border" :class="runtimeMessageClass">
-        {{ runtimeMessage }}
+      <div v-if="envMessage" class="mb-4 px-4 py-3 rounded-lg text-sm border" :class="envMessageClass">
+        {{ envMessage }}
       </div>
 
-      <div class="mb-4 rounded-lg border border-gray-800 bg-gray-950/50 p-3">
-        <div class="mb-2 flex items-center justify-between gap-2">
-          <label class="block text-sm text-gray-300">Free 注册邮箱提供商</label>
-          <span class="text-[11px] text-gray-500">{{ runtimeSources.MAIL_PROVIDER || 'env' }}</span>
-        </div>
-        <div class="flex flex-wrap items-center gap-4">
-          <label class="flex items-center gap-2 text-sm text-gray-200">
-            <input type="radio" value="cloudmail" v-model="runtimeForm.MAIL_PROVIDER" />
-            <span>CloudMail</span>
-          </label>
-          <label class="flex items-center gap-2 text-sm text-gray-200">
-            <input type="radio" value="outlook" v-model="runtimeForm.MAIL_PROVIDER" />
-            <span>Outlook</span>
-            <a
-              class="text-xs text-cyan-300 underline"
-              href="#"
-              @click.prevent="$emit('navigate', 'mail-pool')"
-            >
-              (池可用 {{ outlookStats.available }} 个)
-            </a>
-          </label>
-        </div>
-        <p
-          v-if="runtimeForm.MAIL_PROVIDER === 'outlook' && outlookStats.available === 0"
-          class="mt-2 text-sm text-rose-300"
+      <div
+        v-if="restartRequired"
+        class="mb-4 flex flex-col gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100 md:flex-row md:items-center md:justify-between"
+      >
+        <span>有配置需要重启服务后完整生效。</span>
+        <button
+          @click="restartApplication"
+          :disabled="restartSubmitting"
+          class="px-4 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-sm rounded-lg transition disabled:opacity-50"
         >
-          ⚠ Outlook 池为空,请先在「邮箱池」页导入。
-        </p>
+          {{ restartSubmitting ? '重启中...' : '重启服务' }}
+        </button>
       </div>
 
-      <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <div>
-          <div class="mb-1 flex items-center justify-between gap-2">
-            <label class="block text-sm text-gray-400">Free 域名</label>
-            <span class="text-[11px] text-gray-500">{{ runtimeSources.CLOUDMAIL_FREE_DOMAIN || 'env' }}</span>
+      <div v-if="envGroups.length === 0" class="text-sm text-gray-500">正在加载配置...</div>
+
+      <div v-else class="space-y-4">
+        <div
+          v-for="group in envGroups"
+          :key="group.name"
+          class="border-t border-gray-800 pt-4 first:border-t-0 first:pt-0"
+        >
+          <div class="mb-3 flex items-center justify-between gap-3">
+            <h3 class="text-sm font-medium text-gray-200">{{ group.name }}</h3>
+            <span class="text-[11px] text-gray-500">{{ group.fields.length }} 项</span>
           </div>
-          <input
-            v-model.trim="runtimeForm.CLOUDMAIL_FREE_DOMAIN"
-            type="text"
-            placeholder="@your-domain.com"
-            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-          />
-        </div>
-        <div>
-          <div class="mb-1 flex items-center justify-between gap-2">
-            <label class="block text-sm text-gray-400">Free 代理 URL</label>
-            <span class="text-[11px] text-gray-500">{{ runtimeSources.PLAYWRIGHT_PROXY_URL || 'env' }}</span>
+          <div class="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-3">
+            <div v-for="field in group.fields" :key="field.key" class="min-w-0">
+              <div class="mb-1 flex items-center justify-between gap-2">
+                <label :for="`env-${field.key}`" class="block truncate text-sm text-gray-400">
+                  {{ field.label }}
+                </label>
+                <div class="flex shrink-0 items-center gap-1">
+                  <span
+                    v-if="field.restart_required"
+                    class="rounded border border-amber-500/20 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-200"
+                  >
+                    需重启
+                  </span>
+                  <span class="rounded border px-1.5 py-0.5 text-[10px]" :class="sourceBadgeClass(field.source)">
+                    {{ sourceLabel(field.source) }}
+                  </span>
+                </div>
+              </div>
+
+              <div v-if="field.key === 'MAIL_PROVIDER'" class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2">
+                <div class="flex flex-wrap items-center gap-4">
+                  <label class="flex items-center gap-2 text-sm text-gray-200">
+                    <input type="radio" value="cloudmail" v-model="envForm[field.key]" />
+                    <span>CloudMail</span>
+                  </label>
+                  <label class="flex items-center gap-2 text-sm text-gray-200">
+                    <input type="radio" value="outlook" v-model="envForm[field.key]" />
+                    <span>Outlook</span>
+                    <a
+                      class="text-xs text-cyan-300 underline"
+                      href="#"
+                      @click.prevent="emit('navigate', 'mail-pool')"
+                    >
+                      池可用 {{ outlookStats.available }} 个
+                    </a>
+                  </label>
+                </div>
+                <p
+                  v-if="(envForm[field.key] || 'cloudmail') === 'outlook' && outlookStats.available === 0"
+                  class="mt-2 text-sm text-rose-300"
+                >
+                  Outlook 池为空，请先在「邮箱池」页导入。
+                </p>
+              </div>
+
+              <div
+                v-else-if="field.type === 'bool'"
+                class="flex h-10 items-center gap-3 rounded-lg border border-gray-700 bg-gray-800 px-3"
+              >
+                <input
+                  :id="`env-${field.key}`"
+                  type="checkbox"
+                  :checked="envForm[field.key] === '1'"
+                  class="h-4 w-4 rounded border-gray-700 bg-gray-900 text-blue-600 focus:ring-blue-500"
+                  @change="setBoolEnvField(field.key, $event.target.checked)"
+                />
+                <span class="text-sm text-gray-300">{{ envForm[field.key] === '1' ? '开启' : '关闭' }}</span>
+              </div>
+
+              <div v-else class="flex gap-2">
+                <input
+                  :id="`env-${field.key}`"
+                  v-model.trim="envForm[field.key]"
+                  :type="fieldInputType(field)"
+                  :inputmode="field.type === 'number' ? 'numeric' : undefined"
+                  :placeholder="envPlaceholder(field)"
+                  :disabled="envSensitiveClears[field.key]"
+                  spellcheck="false"
+                  class="min-w-0 flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-60"
+                />
+                <button
+                  v-if="field.sensitive && field.has_value"
+                  type="button"
+                  @click="toggleSensitiveClear(field.key)"
+                  class="shrink-0 px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs rounded-lg border border-gray-700 transition"
+                >
+                  {{ envSensitiveClears[field.key] ? '取消' : '清空' }}
+                </button>
+              </div>
+
+              <p v-if="envFieldHint(field)" class="mt-1 text-xs text-gray-500 break-words">
+                {{ envFieldHint(field) }}
+              </p>
+              <p class="mt-1 truncate font-mono text-[11px] text-gray-600">
+                {{ field.key }}
+              </p>
+            </div>
           </div>
-          <input
-            v-model.trim="runtimeForm.PLAYWRIGHT_PROXY_URL"
-            type="text"
-            placeholder="socks5://host:port"
-            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-          />
-        </div>
-        <div>
-          <div class="mb-1 flex items-center justify-between gap-2">
-            <label class="block text-sm text-gray-400">Free 代理绕过</label>
-            <span class="text-[11px] text-gray-500">{{ runtimeSources.PLAYWRIGHT_PROXY_BYPASS || 'env' }}</span>
-          </div>
-          <input
-            v-model.trim="runtimeForm.PLAYWRIGHT_PROXY_BYPASS"
-            type="text"
-            placeholder="localhost,127.0.0.1"
-            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
-          />
         </div>
       </div>
 
-      <div class="mt-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div class="mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <p class="text-xs text-gray-500 break-all">
-          {{ runtimePath || 'runtime_config.json' }}
+          {{ envPath || '.env' }}
         </p>
         <div class="flex justify-end gap-3">
           <button
-            @click="loadRuntimeConfig"
-            :disabled="runtimeSaving"
+            @click="loadEnvConfig"
+            :disabled="envSaving || restartSubmitting"
             class="px-4 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm rounded-lg border border-gray-700 transition disabled:opacity-50"
           >
             刷新
           </button>
           <button
-            @click="saveRuntimeConfig"
-            :disabled="runtimeSaving"
+            @click="saveEnvConfig"
+            :disabled="envSaving || restartSubmitting"
             class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50"
           >
-            {{ runtimeSaving ? '保存中...' : '保存运行时配置' }}
+            {{ envSaving ? '保存中...' : '保存 .env' }}
           </button>
         </div>
-      </div>
-    </div>
-
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="text-lg font-semibold text-white">巡检设置</h2>
-        <span v-if="saved" class="text-xs text-green-400 transition">已保存</span>
-      </div>
-
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">巡检间隔</label>
-          <div class="flex items-center gap-2">
-            <input v-model.number="form.interval" type="number" min="1"
-              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500" />
-            <span class="text-sm text-gray-500 shrink-0">分钟</span>
-          </div>
-        </div>
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">额度阈值</label>
-          <div class="flex items-center gap-2">
-            <input v-model.number="form.threshold" type="number" min="1" max="100"
-              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500" />
-            <span class="text-sm text-gray-500 shrink-0">%</span>
-          </div>
-        </div>
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">触发账号数</label>
-          <div class="flex items-center gap-2">
-            <input v-model.number="form.min_low" type="number" min="1"
-              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500" />
-            <span class="text-sm text-gray-500 shrink-0">个</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="mt-3 flex items-center justify-between gap-3">
-        <p class="text-xs text-gray-500">
-          每 {{ form.interval }} 分钟检查一次，{{ form.min_low }} 个以上账号剩余低于 {{ form.threshold }}% 时自动轮转
-        </p>
-        <button @click="save" :disabled="saving"
-          class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50">
-          {{ saving ? '保存中...' : '保存' }}
-        </button>
       </div>
     </div>
   </div>
@@ -493,7 +497,7 @@
 
 <script setup>
 import { computed, ref, watch, onMounted } from 'vue'
-import { api } from '../api.js'
+import { api, setApiKey, clearApiKey } from '../api.js'
 
 const props = defineProps({
   adminStatus: {
@@ -508,23 +512,18 @@ const props = defineProps({
 
 const emit = defineEmits(['refresh', 'admin-progress', 'navigate'])
 
-const form = ref({ interval: 5, threshold: 10, min_low: 2 })
-const saving = ref(false)
-const saved = ref(false)
-const runtimeForm = ref({
-  CLOUDMAIL_FREE_DOMAIN: '',
-  PLAYWRIGHT_PROXY_URL: '',
-  PLAYWRIGHT_PROXY_BYPASS: '',
-  MAIL_PROVIDER: 'cloudmail',
-})
+const envFields = ref([])
+const envForm = ref({})
+const envLoadedForm = ref({})
+const envPath = ref('')
+const envSaving = ref(false)
+const envSaved = ref(false)
+const envMessage = ref('')
+const envMessageClass = ref('')
+const envSensitiveClears = ref({})
+const restartRequired = ref(false)
+const restartSubmitting = ref(false)
 const outlookStats = ref({ total: 0, available: 0, in_use: 0, used: 0, error: 0 })
-const runtimeLoadedForm = ref({ ...runtimeForm.value })
-const runtimeSources = ref({})
-const runtimePath = ref('')
-const runtimeSaving = ref(false)
-const runtimeSaved = ref(false)
-const runtimeMessage = ref('')
-const runtimeMessageClass = ref('')
 
 const email = ref('')
 const sessionEmail = ref('')
@@ -548,6 +547,19 @@ const adminConfigured = computed(() => !!props.adminStatus?.configured)
 const adminBusy = computed(() => !!props.adminStatus?.login_in_progress)
 const codexBusy = computed(() => !!props.codexStatus?.in_progress)
 const codexActionLabel = computed(() => props.codexStatus?.action === 'sync' ? '同步' : '登录')
+const envGroups = computed(() => {
+  const groups = []
+  const index = new Map()
+  for (const field of envFields.value) {
+    const name = field.group || '其他'
+    if (!index.has(name)) {
+      index.set(name, { name, fields: [] })
+      groups.push(index.get(name))
+    }
+    index.get(name).fields.push(field)
+  }
+  return groups
+})
 
 watch(
   () => props.adminStatus,
@@ -583,19 +595,8 @@ watch(
   { immediate: true },
 )
 
-onMounted(async () => {
-  await loadRuntimeConfig()
-  await loadOutlookStats()
-  try {
-    const cfg = await api.getAutoCheckConfig()
-    form.value = {
-      interval: Math.round(cfg.interval / 60),
-      threshold: cfg.threshold,
-      min_low: cfg.min_low,
-    }
-  } catch (e) {
-    console.error('加载巡检配置失败:', e)
-  }
+onMounted(() => {
+  loadEnvConfig()
 })
 
 function setMessage(text, type = 'success') {
@@ -609,29 +610,27 @@ function setMessage(text, type = 'success') {
   }, 8000)
 }
 
-function setRuntimeMessage(text, type = 'success') {
-  runtimeMessage.value = text
-  runtimeMessageClass.value = type === 'success'
+function setEnvMessage(text, type = 'success') {
+  envMessage.value = text
+  envMessageClass.value = type === 'success'
     ? 'bg-green-500/10 text-green-400 border-green-500/20'
     : 'bg-red-500/10 text-red-400 border-red-500/20'
-  window.clearTimeout(setRuntimeMessage._timer)
-  setRuntimeMessage._timer = window.setTimeout(() => {
-    runtimeMessage.value = ''
+  window.clearTimeout(setEnvMessage._timer)
+  setEnvMessage._timer = window.setTimeout(() => {
+    envMessage.value = ''
   }, 8000)
 }
 
-function applyRuntimeConfig(data) {
-  const effective = data?.effective || {}
-  const next = {
-    CLOUDMAIL_FREE_DOMAIN: effective.CLOUDMAIL_FREE_DOMAIN || '',
-    PLAYWRIGHT_PROXY_URL: effective.PLAYWRIGHT_PROXY_URL || '',
-    PLAYWRIGHT_PROXY_BYPASS: effective.PLAYWRIGHT_PROXY_BYPASS || '',
-    MAIL_PROVIDER: effective.MAIL_PROVIDER || 'cloudmail',
+function applyEnvConfig(data) {
+  const next = {}
+  envFields.value = data?.fields || []
+  for (const field of envFields.value) {
+    next[field.key] = field.value ?? ''
   }
-  runtimeForm.value = next
-  runtimeLoadedForm.value = { ...next }
-  runtimeSources.value = data?.sources || {}
-  runtimePath.value = data?.path || ''
+  envForm.value = next
+  envLoadedForm.value = { ...next }
+  envPath.value = data?.path || ''
+  envSensitiveClears.value = {}
 }
 
 async function loadOutlookStats() {
@@ -642,39 +641,148 @@ async function loadOutlookStats() {
   }
 }
 
-async function loadRuntimeConfig() {
+async function loadEnvConfig(options = {}) {
   try {
-    const data = await api.getRuntimeConfig()
-    applyRuntimeConfig(data)
+    const data = await api.getEnvConfig()
+    applyEnvConfig(data)
+    await loadOutlookStats()
+    if (options.clearRestart) {
+      restartRequired.value = false
+    }
+    const migrated = data?.migration?.migrated_keys || []
+    if (migrated.length > 0) {
+      setEnvMessage(`已从旧配置迁移到 .env: ${migrated.join(', ')}`)
+    }
   } catch (e) {
-    setRuntimeMessage(`加载运行时配置失败: ${e.message}`, 'error')
+    setEnvMessage(`加载环境变量失败: ${e.message}`, 'error')
   }
 }
 
-async function saveRuntimeConfig() {
+function fieldInputType(field) {
+  if (field.type === 'number') return 'number'
+  if (field.sensitive) return 'password'
+  return 'text'
+}
+
+function envPlaceholder(field) {
+  if (envSensitiveClears.value[field.key]) return '保存后清空'
+  if (field.sensitive && field.has_value) return '已设置，输入新值覆盖'
+  if (field.default) return field.default
+  return ''
+}
+
+function envFieldHint(field) {
+  if (envSensitiveClears.value[field.key]) return '保存后将清空该值。'
+  if (field.sensitive && field.has_value) return '已设置；留空表示不修改。'
+  if (field.masked) return '当前值已遮蔽；修改时请输入完整新值。'
+  return field.description || ''
+}
+
+function sourceLabel(source) {
+  if (source === 'env') return '.env'
+  if (source === 'process') return '进程'
+  if (source === 'default') return '默认'
+  return source || '-'
+}
+
+function sourceBadgeClass(source) {
+  if (source === 'env') return 'border-blue-500/20 bg-blue-500/10 text-blue-300'
+  if (source === 'process') return 'border-cyan-500/20 bg-cyan-500/10 text-cyan-300'
+  return 'border-gray-700 bg-gray-800 text-gray-400'
+}
+
+function setBoolEnvField(key, checked) {
+  envForm.value = { ...envForm.value, [key]: checked ? '1' : '0' }
+}
+
+function toggleSensitiveClear(key) {
+  const next = { ...envSensitiveClears.value }
+  if (next[key]) {
+    delete next[key]
+  } else {
+    next[key] = true
+    envForm.value = { ...envForm.value, [key]: '' }
+  }
+  envSensitiveClears.value = next
+}
+
+async function saveEnvConfig() {
   const payload = {}
-  for (const key of Object.keys(runtimeForm.value)) {
-    if (runtimeForm.value[key] !== runtimeLoadedForm.value[key]) {
-      payload[key] = runtimeForm.value[key]
+  for (const field of envFields.value) {
+    const key = field.key
+    if (envSensitiveClears.value[key]) {
+      payload[key] = ''
+      continue
+    }
+    const current = envForm.value[key] ?? ''
+    const loaded = envLoadedForm.value[key] ?? ''
+    if (field.sensitive) {
+      if (current !== '') payload[key] = current
+    } else if (current !== loaded) {
+      payload[key] = current
     }
   }
+
   if (Object.keys(payload).length === 0) {
-    setRuntimeMessage('没有需要保存的改动')
+    setEnvMessage('没有需要保存的改动')
     return
   }
 
-  runtimeSaving.value = true
-  runtimeSaved.value = false
+  envSaving.value = true
+  envSaved.value = false
   try {
-    const data = await api.setRuntimeConfig(payload)
-    applyRuntimeConfig(data)
-    runtimeSaved.value = true
-    setRuntimeMessage('运行时配置已保存')
-    setTimeout(() => { runtimeSaved.value = false }, 3000)
+    const result = await api.setEnvConfig(payload)
+    if (Object.prototype.hasOwnProperty.call(payload, 'API_KEY')) {
+      if (payload.API_KEY) {
+        setApiKey(payload.API_KEY)
+      } else {
+        clearApiKey()
+      }
+    }
+    applyEnvConfig(result.config)
+    restartRequired.value = restartRequired.value || !!result.restart_required
+    envSaved.value = true
+    setEnvMessage(result.restart_required ? '配置已保存，部分字段需重启后完整生效' : '配置已保存')
+    setTimeout(() => { envSaved.value = false }, 3000)
+    emit('refresh')
   } catch (e) {
-    setRuntimeMessage(`保存运行时配置失败: ${e.message}`, 'error')
+    setEnvMessage(`保存环境变量失败: ${e.message}`, 'error')
   } finally {
-    runtimeSaving.value = false
+    envSaving.value = false
+  }
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function waitForRestartRecovery() {
+  const deadline = Date.now() + 60000
+  await sleep(1500)
+  while (Date.now() < deadline) {
+    try {
+      await api.getSetupStatus()
+      await loadEnvConfig({ clearRestart: true })
+      emit('refresh')
+      return
+    } catch {
+      await sleep(2000)
+    }
+  }
+  throw new Error('重启已提交，但 60 秒内未确认服务恢复')
+}
+
+async function restartApplication() {
+  restartSubmitting.value = true
+  try {
+    await api.restartSystem()
+    setEnvMessage('重启已提交，正在等待服务恢复...')
+    await waitForRestartRecovery()
+    setEnvMessage('服务已恢复，配置已重新加载')
+  } catch (e) {
+    setEnvMessage(`重启失败: ${e.message}`, 'error')
+  } finally {
+    restartSubmitting.value = false
   }
 }
 
@@ -877,29 +985,6 @@ async function deleteMainCodexFromCpa() {
     setMessage(e.message, 'error')
   } finally {
     deletingMainCpa.value = false
-  }
-}
-
-async function save() {
-  saving.value = true
-  saved.value = false
-  try {
-    const cfg = await api.setAutoCheckConfig({
-      interval: form.value.interval * 60,
-      threshold: form.value.threshold,
-      min_low: form.value.min_low,
-    })
-    form.value = {
-      interval: Math.round(cfg.interval / 60),
-      threshold: cfg.threshold,
-      min_low: cfg.min_low,
-    }
-    saved.value = true
-    setTimeout(() => { saved.value = false }, 3000)
-  } catch (e) {
-    console.error('保存失败:', e)
-  } finally {
-    saving.value = false
   }
 }
 </script>

@@ -118,6 +118,8 @@ def sanitize_runtime_config(config: dict[str, str]) -> dict[str, str]:
 
 
 def get_mail_provider() -> str:
-    """返回 'cloudmail' 或 'outlook',默认 'cloudmail'。"""
-    value = get_runtime_value("MAIL_PROVIDER", default="cloudmail")
+    """返回 'cloudmail' 或 'outlook'，兼容旧 runtime_config 覆盖。"""
+    from autoteam.config import get_mail_provider as _get_env_mail_provider
+
+    value = get_runtime_value("MAIL_PROVIDER", default=_get_env_mail_provider())
     return value or "cloudmail"

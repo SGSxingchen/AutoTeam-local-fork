@@ -2,7 +2,7 @@
 
 from fastapi.testclient import TestClient
 
-from autoteam import accounts, free_accounts
+from autoteam import accounts, config, free_accounts
 from autoteam import api as api_module
 
 
@@ -99,6 +99,22 @@ def test_disabled_when_domain_not_configured(tmp_path, monkeypatch):
 
     response = client.post("/api/free/accounts/a@free.example.com/refresh")
     assert response.status_code == 503
+
+
+def test_outlook_provider_enables_free_accounts_without_cloudmail_domain(tmp_path, monkeypatch):
+    _patch_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(api_module, "get_cloudmail_free_domain", lambda: "")
+    monkeypatch.setattr(config, "MAIL_PROVIDER", "outlook")
+    monkeypatch.setattr(api_module, "_start_task", lambda *args, **kwargs: {"task_id": "task-1", "status": "queued"})
+
+    client = TestClient(api_module.app)
+
+    response = client.get("/api/free/accounts")
+    assert response.status_code == 200
+    assert response.json() == {"enabled": True, "accounts": []}
+
+    response = client.post("/api/free/accounts", json={"count": 1})
+    assert response.status_code == 202
 
 
 def test_post_count_validation(tmp_path, monkeypatch):

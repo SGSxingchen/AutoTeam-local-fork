@@ -65,13 +65,13 @@ def create_one_free_account(mail_client):
             email,
             password,
             cloudmail_account_id=account_id,
-            use_runtime_proxy=True,
+            use_free_proxy=True,
         )
         if not ok:
             _rollback_cloudmail(mail_client, account_id)
             return {"status": "failed", "email": email, "reason": "register_failed_3x"}
 
-        bundle = login_codex_via_browser(email, password, mail_client=mail_client, use_runtime_proxy=True)
+        bundle = login_codex_via_browser(email, password, mail_client=mail_client, use_free_proxy=True)
         if not bundle:
             _rollback_cloudmail(mail_client, account_id)
             return {"status": "failed", "email": email, "reason": "codex_oauth_failed"}
@@ -176,7 +176,7 @@ def refresh_codex(email):
         acc["email"],
         acc["password"],
         mail_client=mail_client,
-        use_runtime_proxy=True,
+        use_free_proxy=True,
     )
     if not bundle:
         update_free_account(email, last_error="codex_oauth_failed")

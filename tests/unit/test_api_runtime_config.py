@@ -17,7 +17,7 @@ def _patch_runtime_config(tmp_path, monkeypatch):
     return runtime_config
 
 
-def test_get_runtime_config_returns_effective_values_and_masks_proxy(tmp_path, monkeypatch):
+def test_get_runtime_config_returns_legacy_runtime_values_without_overriding_env(tmp_path, monkeypatch):
     runtime_config = _patch_runtime_config(tmp_path, monkeypatch)
     runtime_config.RUNTIME_CONFIG_FILE.write_text(
         json.dumps(
@@ -34,7 +34,7 @@ def test_get_runtime_config_returns_effective_values_and_masks_proxy(tmp_path, m
     assert response.status_code == 200
     body = response.json()
     assert body["effective"]["CLOUDMAIL_FREE_DOMAIN"] == "@env.example.com"
-    assert body["effective"]["PLAYWRIGHT_PROXY_URL"] == "http://***:***@proxy.example.com:8080"
+    assert body["effective"]["PLAYWRIGHT_PROXY_URL"] == ""
     assert body["runtime"]["PLAYWRIGHT_PROXY_URL"] == "http://***:***@proxy.example.com:8080"
     assert body["sources"]["CLOUDMAIL_FREE_DOMAIN"] == "env"
     assert body["sources"]["PLAYWRIGHT_PROXY_URL"] == "runtime"
@@ -55,8 +55,10 @@ def test_put_runtime_config_writes_only_submitted_keys(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json()["effective"]["CLOUDMAIL_FREE_DOMAIN"] == "@new.example.com"
-    assert response.json()["effective"]["PLAYWRIGHT_PROXY_URL"] == "http://***:***@proxy.example.com:8080"
+    assert response.json()["effective"]["CLOUDMAIL_FREE_DOMAIN"] == "@env.example.com"
+    assert response.json()["effective"]["PLAYWRIGHT_PROXY_URL"] == ""
+    assert response.json()["runtime"]["CLOUDMAIL_FREE_DOMAIN"] == "@new.example.com"
+    assert response.json()["runtime"]["PLAYWRIGHT_PROXY_URL"] == "http://***:***@proxy.example.com:8080"
     assert json.loads(runtime_config.RUNTIME_CONFIG_FILE.read_text(encoding="utf-8")) == {
         "CLOUDMAIL_FREE_DOMAIN": "@new.example.com",
         "PLAYWRIGHT_PROXY_URL": "http://user:secret@proxy.example.com:8080",
