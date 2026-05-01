@@ -7,7 +7,7 @@ def _patch_state(tmp_path, monkeypatch):
     monkeypatch.setattr(accounts, "ACCOUNTS_FILE", tmp_path / "accounts.json")
     monkeypatch.setattr(accounts, "get_admin_email", lambda: "")
     monkeypatch.setattr(free_accounts, "FREE_ACCOUNTS_FILE", tmp_path / "free_accounts.json")
-    monkeypatch.setattr(free_register, "CLOUDMAIL_FREE_DOMAIN", "@free.example.com")
+    monkeypatch.setattr(free_register, "get_cloudmail_free_domain", lambda: "@free.example.com")
 
 
 def test_create_free_account_success(tmp_path, monkeypatch):

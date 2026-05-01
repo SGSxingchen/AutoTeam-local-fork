@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from autoteam.config import API_KEY, CLOUDMAIL_FREE_DOMAIN
+from autoteam.config import API_KEY, get_cloudmail_free_domain, get_playwright_proxy_bypass, get_playwright_proxy_url
 from autoteam.textio import read_text
 
 logger = logging.getLogger(__name__)
@@ -464,6 +464,12 @@ class CleanupParams(BaseModel):
 
 class FreeCreateParams(BaseModel):
     count: int = 1
+
+
+class RuntimeConfigUpdate(BaseModel):
+    CLOUDMAIL_FREE_DOMAIN: str | None = None
+    PLAYWRIGHT_PROXY_URL: str | None = None
+    PLAYWRIGHT_PROXY_BYPASS: str | None = None
 
 
 class AdminEmailParams(BaseModel):
@@ -1656,6 +1662,45 @@ def post_cleanup(params: CleanupParams = CleanupParams()):
 
 
 # ---------------------------------------------------------------------------
+# 运行时配置
+# ---------------------------------------------------------------------------
+
+
+def _runtime_config_response():
+    from autoteam import runtime_config
+
+    runtime = runtime_config.load_runtime_config()
+    effective = {
+        "CLOUDMAIL_FREE_DOMAIN": get_cloudmail_free_domain(),
+        "PLAYWRIGHT_PROXY_URL": get_playwright_proxy_url(),
+        "PLAYWRIGHT_PROXY_BYPASS": get_playwright_proxy_bypass(),
+    }
+    return {
+        "path": str(runtime_config.RUNTIME_CONFIG_FILE),
+        "runtime": runtime_config.sanitize_runtime_config(runtime),
+        "effective": runtime_config.sanitize_runtime_config(effective),
+        "sources": {key: ("runtime" if key in runtime else "env") for key in runtime_config.RUNTIME_CONFIG_KEYS},
+    }
+
+
+@app.get("/api/config/runtime")
+def get_runtime_config():
+    """读取热更新配置；代理密码会在响应中遮蔽。"""
+    return _runtime_config_response()
+
+
+@app.put("/api/config/runtime")
+def put_runtime_config(config: RuntimeConfigUpdate):
+    """写入热更新配置；新任务会立即使用新值。"""
+    from autoteam import runtime_config
+
+    updates = {key: getattr(config, key) for key in config.model_fields_set}
+    runtime_config.write_runtime_config(updates)
+    logger.info("[配置] runtime_config.json 已更新: %s", runtime_config.sanitize_runtime_config(updates))
+    return _runtime_config_response()
+
+
+# ---------------------------------------------------------------------------
 # Free 账号管理
 # ---------------------------------------------------------------------------
 
@@ -1674,7 +1719,7 @@ def _free_disabled_response():
 def get_free_accounts():
     from autoteam.free_accounts import load_free_accounts
 
-    if not CLOUDMAIL_FREE_DOMAIN:
+    if not get_cloudmail_free_domain():
         return {"enabled": False, "reason": "CLOUDMAIL_FREE_DOMAIN not set", "accounts": []}
 
     accounts = []
@@ -1695,7 +1740,7 @@ def get_free_accounts():
 
 @app.post("/api/free/accounts", status_code=202)
 def post_free_accounts(params: FreeCreateParams):
-    if not CLOUDMAIL_FREE_DOMAIN:
+    if not get_cloudmail_free_domain():
         _free_disabled_response()
     if not (1 <= params.count <= 50):
         raise HTTPException(status_code=400, detail="count must be in 1..50")
@@ -1708,7 +1753,7 @@ def post_free_accounts(params: FreeCreateParams):
 
 @app.delete("/api/free/accounts/{email}", status_code=202)
 def delete_free_account_endpoint(email: str):
-    if not CLOUDMAIL_FREE_DOMAIN:
+    if not get_cloudmail_free_domain():
         _free_disabled_response()
 
     from autoteam.free_register import delete_free_account_full
@@ -1719,7 +1764,7 @@ def delete_free_account_endpoint(email: str):
 
 @app.post("/api/free/accounts/{email}/refresh", status_code=202)
 def post_free_account_refresh(email: str):
-    if not CLOUDMAIL_FREE_DOMAIN:
+    if not get_cloudmail_free_domain():
         _free_disabled_response()
 
     from autoteam.free_register import refresh_codex
