@@ -15,7 +15,7 @@ def _patch_state(tmp_path, monkeypatch):
 
 def test_get_free_accounts_empty(tmp_path, monkeypatch):
     _patch_state(tmp_path, monkeypatch)
-    monkeypatch.setattr(api_module, "CLOUDMAIL_FREE_DOMAIN", "@free.example.com")
+    monkeypatch.setattr(api_module, "get_cloudmail_free_domain", lambda: "@free.example.com")
 
     client = TestClient(api_module.app)
     response = client.get("/api/free/accounts")
@@ -25,7 +25,7 @@ def test_get_free_accounts_empty(tmp_path, monkeypatch):
 
 def test_get_free_accounts_returns_sanitized(tmp_path, monkeypatch):
     _patch_state(tmp_path, monkeypatch)
-    monkeypatch.setattr(api_module, "CLOUDMAIL_FREE_DOMAIN", "@free.example.com")
+    monkeypatch.setattr(api_module, "get_cloudmail_free_domain", lambda: "@free.example.com")
 
     auth_file = tmp_path / "codex-a@free.example.com-free-x.json"
     auth_file.write_text("{}")
@@ -59,7 +59,7 @@ def test_get_free_accounts_returns_sanitized(tmp_path, monkeypatch):
 
 def test_get_free_accounts_missing_auth_file(tmp_path, monkeypatch):
     _patch_state(tmp_path, monkeypatch)
-    monkeypatch.setattr(api_module, "CLOUDMAIL_FREE_DOMAIN", "@free.example.com")
+    monkeypatch.setattr(api_module, "get_cloudmail_free_domain", lambda: "@free.example.com")
 
     free_accounts.save_free_accounts(
         [
@@ -83,7 +83,7 @@ def test_get_free_accounts_missing_auth_file(tmp_path, monkeypatch):
 
 def test_disabled_when_domain_not_configured(tmp_path, monkeypatch):
     _patch_state(tmp_path, monkeypatch)
-    monkeypatch.setattr(api_module, "CLOUDMAIL_FREE_DOMAIN", "")
+    monkeypatch.setattr(api_module, "get_cloudmail_free_domain", lambda: "")
 
     client = TestClient(api_module.app)
 
@@ -103,7 +103,7 @@ def test_disabled_when_domain_not_configured(tmp_path, monkeypatch):
 
 def test_post_count_validation(tmp_path, monkeypatch):
     _patch_state(tmp_path, monkeypatch)
-    monkeypatch.setattr(api_module, "CLOUDMAIL_FREE_DOMAIN", "@free.example.com")
+    monkeypatch.setattr(api_module, "get_cloudmail_free_domain", lambda: "@free.example.com")
 
     client = TestClient(api_module.app)
     response = client.post("/api/free/accounts", json={"count": 0})

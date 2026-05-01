@@ -55,7 +55,7 @@ from autoteam.codex_auth import (
     refresh_access_token,
     save_auth_file,
 )
-from autoteam.config import CLOUDMAIL_FREE_DOMAIN
+from autoteam.config import get_cloudmail_free_domain
 from autoteam.cpa_sync import sync_from_cpa, sync_main_codex_to_cpa, sync_to_cpa
 from autoteam.fivesim import FiveSimClient, is_phone_page, try_phone_verification
 from autoteam.playwright_config import browser_context_kwargs, chromium_launch_kwargs
@@ -1912,7 +1912,7 @@ def cmd_manual_add():
 
 def cmd_add_free(count):
     """批量注册 Free 账号（使用 CLOUDMAIL_FREE_DOMAIN 域名）。"""
-    if not CLOUDMAIL_FREE_DOMAIN:
+    if not get_cloudmail_free_domain():
         logger.error("[Free] 未配置 CLOUDMAIL_FREE_DOMAIN，无法启用 Free 注册")
         sys.exit(1)
     if not (1 <= count <= 50):

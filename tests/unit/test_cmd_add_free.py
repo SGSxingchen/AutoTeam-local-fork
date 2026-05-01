@@ -4,7 +4,7 @@ from autoteam import manager
 
 
 def test_cmd_add_free_invalid_domain_exits(monkeypatch):
-    monkeypatch.setattr(manager, "CLOUDMAIL_FREE_DOMAIN", "")
+    monkeypatch.setattr(manager, "get_cloudmail_free_domain", lambda: "")
 
     with pytest.raises(SystemExit) as exc:
         manager.cmd_add_free(1)
@@ -13,7 +13,7 @@ def test_cmd_add_free_invalid_domain_exits(monkeypatch):
 
 
 def test_cmd_add_free_invalid_count_exits(monkeypatch):
-    monkeypatch.setattr(manager, "CLOUDMAIL_FREE_DOMAIN", "@x.com")
+    monkeypatch.setattr(manager, "get_cloudmail_free_domain", lambda: "@x.com")
 
     with pytest.raises(SystemExit) as exc:
         manager.cmd_add_free(0)
@@ -25,7 +25,7 @@ def test_cmd_add_free_invalid_count_exits(monkeypatch):
 
 
 def test_cmd_add_free_calls_batch_and_sync(monkeypatch):
-    monkeypatch.setattr(manager, "CLOUDMAIL_FREE_DOMAIN", "@x.com")
+    monkeypatch.setattr(manager, "get_cloudmail_free_domain", lambda: "@x.com")
 
     calls = {}
 

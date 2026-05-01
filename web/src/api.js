@@ -93,6 +93,8 @@ export const api = {
 
   getAutoCheckConfig: () => request('GET', '/config/auto-check'),
   setAutoCheckConfig: (cfg) => request('PUT', '/config/auto-check', cfg),
+  getRuntimeConfig: () => request('GET', '/config/runtime'),
+  setRuntimeConfig: (cfg) => request('PUT', '/config/runtime', cfg),
 
   getTeamMembers: () => request('GET', '/team/members'),
   removeTeamMember: (payload) => request('POST', '/team/members/remove', payload),

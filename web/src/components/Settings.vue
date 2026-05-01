@@ -339,6 +339,83 @@
     </div>
 
     <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+      <div class="flex flex-col gap-2 mb-4 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 class="text-lg font-semibold text-white">运行时配置</h2>
+          <p class="text-sm text-gray-400 mt-1">
+            Free 域名和浏览器代理保存到 runtime_config.json，新建任务会直接使用最新值。
+          </p>
+        </div>
+        <span v-if="runtimeSaved" class="text-xs text-green-400 transition">已保存</span>
+      </div>
+
+      <div v-if="runtimeMessage" class="mb-4 px-4 py-3 rounded-lg text-sm border" :class="runtimeMessageClass">
+        {{ runtimeMessage }}
+      </div>
+
+      <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <div>
+          <div class="mb-1 flex items-center justify-between gap-2">
+            <label class="block text-sm text-gray-400">Free 域名</label>
+            <span class="text-[11px] text-gray-500">{{ runtimeSources.CLOUDMAIL_FREE_DOMAIN || 'env' }}</span>
+          </div>
+          <input
+            v-model.trim="runtimeForm.CLOUDMAIL_FREE_DOMAIN"
+            type="text"
+            placeholder="@your-domain.com"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <div class="mb-1 flex items-center justify-between gap-2">
+            <label class="block text-sm text-gray-400">代理 URL</label>
+            <span class="text-[11px] text-gray-500">{{ runtimeSources.PLAYWRIGHT_PROXY_URL || 'env' }}</span>
+          </div>
+          <input
+            v-model.trim="runtimeForm.PLAYWRIGHT_PROXY_URL"
+            type="text"
+            placeholder="socks5://host:port"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <div class="mb-1 flex items-center justify-between gap-2">
+            <label class="block text-sm text-gray-400">代理绕过</label>
+            <span class="text-[11px] text-gray-500">{{ runtimeSources.PLAYWRIGHT_PROXY_BYPASS || 'env' }}</span>
+          </div>
+          <input
+            v-model.trim="runtimeForm.PLAYWRIGHT_PROXY_BYPASS"
+            type="text"
+            placeholder="localhost,127.0.0.1"
+            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+          />
+        </div>
+      </div>
+
+      <div class="mt-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <p class="text-xs text-gray-500 break-all">
+          {{ runtimePath || 'runtime_config.json' }}
+        </p>
+        <div class="flex justify-end gap-3">
+          <button
+            @click="loadRuntimeConfig"
+            :disabled="runtimeSaving"
+            class="px-4 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm rounded-lg border border-gray-700 transition disabled:opacity-50"
+          >
+            刷新
+          </button>
+          <button
+            @click="saveRuntimeConfig"
+            :disabled="runtimeSaving"
+            class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50"
+          >
+            {{ runtimeSaving ? '保存中...' : '保存运行时配置' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-lg font-semibold text-white">巡检设置</h2>
         <span v-if="saved" class="text-xs text-green-400 transition">已保存</span>
@@ -404,6 +481,18 @@ const emit = defineEmits(['refresh', 'admin-progress'])
 const form = ref({ interval: 5, threshold: 10, min_low: 2 })
 const saving = ref(false)
 const saved = ref(false)
+const runtimeForm = ref({
+  CLOUDMAIL_FREE_DOMAIN: '',
+  PLAYWRIGHT_PROXY_URL: '',
+  PLAYWRIGHT_PROXY_BYPASS: '',
+})
+const runtimeLoadedForm = ref({ ...runtimeForm.value })
+const runtimeSources = ref({})
+const runtimePath = ref('')
+const runtimeSaving = ref(false)
+const runtimeSaved = ref(false)
+const runtimeMessage = ref('')
+const runtimeMessageClass = ref('')
 
 const email = ref('')
 const sessionEmail = ref('')
@@ -463,6 +552,7 @@ watch(
 )
 
 onMounted(async () => {
+  await loadRuntimeConfig()
   try {
     const cfg = await api.getAutoCheckConfig()
     form.value = {
@@ -484,6 +574,66 @@ function setMessage(text, type = 'success') {
   setMessage._timer = window.setTimeout(() => {
     message.value = ''
   }, 8000)
+}
+
+function setRuntimeMessage(text, type = 'success') {
+  runtimeMessage.value = text
+  runtimeMessageClass.value = type === 'success'
+    ? 'bg-green-500/10 text-green-400 border-green-500/20'
+    : 'bg-red-500/10 text-red-400 border-red-500/20'
+  window.clearTimeout(setRuntimeMessage._timer)
+  setRuntimeMessage._timer = window.setTimeout(() => {
+    runtimeMessage.value = ''
+  }, 8000)
+}
+
+function applyRuntimeConfig(data) {
+  const effective = data?.effective || {}
+  const next = {
+    CLOUDMAIL_FREE_DOMAIN: effective.CLOUDMAIL_FREE_DOMAIN || '',
+    PLAYWRIGHT_PROXY_URL: effective.PLAYWRIGHT_PROXY_URL || '',
+    PLAYWRIGHT_PROXY_BYPASS: effective.PLAYWRIGHT_PROXY_BYPASS || '',
+  }
+  runtimeForm.value = next
+  runtimeLoadedForm.value = { ...next }
+  runtimeSources.value = data?.sources || {}
+  runtimePath.value = data?.path || ''
+}
+
+async function loadRuntimeConfig() {
+  try {
+    const data = await api.getRuntimeConfig()
+    applyRuntimeConfig(data)
+  } catch (e) {
+    setRuntimeMessage(`加载运行时配置失败: ${e.message}`, 'error')
+  }
+}
+
+async function saveRuntimeConfig() {
+  const payload = {}
+  for (const key of Object.keys(runtimeForm.value)) {
+    if (runtimeForm.value[key] !== runtimeLoadedForm.value[key]) {
+      payload[key] = runtimeForm.value[key]
+    }
+  }
+  if (Object.keys(payload).length === 0) {
+    setRuntimeMessage('没有需要保存的改动')
+    return
+  }
+
+  runtimeSaving.value = true
+  runtimeSaved.value = false
+  try {
+    const data = await api.setRuntimeConfig(payload)
+    applyRuntimeConfig(data)
+    runtimeSaved.value = true
+    setRuntimeMessage('运行时配置已保存')
+    setTimeout(() => { runtimeSaved.value = false }, 3000)
+  } catch (e) {
+    setRuntimeMessage(`保存运行时配置失败: ${e.message}`, 'error')
+  } finally {
+    runtimeSaving.value = false
+  }
 }
 
 async function startLogin() {
