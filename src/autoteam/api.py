@@ -470,6 +470,11 @@ class RuntimeConfigUpdate(BaseModel):
     CLOUDMAIL_FREE_DOMAIN: str | None = None
     PLAYWRIGHT_PROXY_URL: str | None = None
     PLAYWRIGHT_PROXY_BYPASS: str | None = None
+    MAIL_PROVIDER: str | None = None
+
+
+class OutlookImportRequest(BaseModel):
+    text: str
 
 
 class AdminEmailParams(BaseModel):
@@ -1771,6 +1776,96 @@ def post_free_account_refresh(email: str):
 
     task = _start_task("free.refresh", refresh_codex, {"email": email}, email)
     return task
+
+
+# ----- Outlook 邮箱池 -----
+
+
+@app.get("/api/outlook/pool")
+def list_outlook_pool(
+    status: str | None = None,
+    q: str | None = None,
+    page: int = 1,
+    size: int = 50,
+):
+    from autoteam import outlook_pool
+
+    rows = outlook_pool.load_pool()
+    if status:
+        rows = [r for r in rows if r.get("status") == status]
+    if q:
+        ql = q.lower()
+        rows = [r for r in rows if ql in (r.get("email") or "").lower()]
+    total = len(rows)
+    rows.sort(key=lambda r: r.get("added_at") or 0, reverse=True)
+    start = max(0, (page - 1) * size)
+    page_rows = rows[start : start + size]
+
+    sanitized = []
+    for r in page_rows:
+        item = dict(r)
+        rt = item.get("refresh_token") or ""
+        item["refresh_token_preview"] = f"{rt[:8]}...{rt[-8:]}" if len(rt) > 16 else "***"
+        item.pop("refresh_token", None)
+        item.pop("password", None)
+        sanitized.append(item)
+    return {"rows": sanitized, "total": total, "stats": outlook_pool.stats()}
+
+
+@app.post("/api/outlook/pool/import")
+def import_outlook_pool(payload: OutlookImportRequest):
+    from autoteam import outlook_pool
+
+    return outlook_pool.import_from_text(payload.text)
+
+
+@app.post("/api/outlook/pool/test/{email}")
+def test_outlook_account(email: str):
+    from autoteam import outlook_pool
+    from autoteam.outlook_imap import OutlookIMAP
+    from autoteam.outlook_oauth import OutlookOAuthError, OutlookTokenRevokedError, get_access_token
+
+    record = outlook_pool.find(email)
+    if record is None:
+        raise HTTPException(status_code=404, detail="account not found")
+    try:
+        token = get_access_token(record)
+        with OutlookIMAP(record["email"], token) as imap:
+            imap.search_emails(limit=1)
+        return {"ok": True}
+    except OutlookTokenRevokedError as exc:
+        return {"ok": False, "error": f"token_revoked: {exc}"}
+    except OutlookOAuthError as exc:
+        return {"ok": False, "error": f"oauth_error: {exc}"}
+    except Exception as exc:
+        return {"ok": False, "error": f"imap_error: {exc}"}
+
+
+@app.post("/api/outlook/pool/reset/{email}")
+def reset_outlook_account(email: str):
+    from autoteam import outlook_pool
+
+    ok = outlook_pool.reset(email)
+    if not ok:
+        raise HTTPException(status_code=400, detail="cannot reset (already used or not found)")
+    return {"ok": True}
+
+
+@app.delete("/api/outlook/pool/{email}")
+def delete_outlook_account(email: str):
+    from autoteam import outlook_pool
+
+    ok = outlook_pool.delete(email)
+    if not ok:
+        raise HTTPException(status_code=404, detail="account not found")
+    return {"ok": True}
+
+
+@app.get("/api/outlook/pool/stats")
+def outlook_pool_stats():
+    from autoteam import outlook_pool
+
+    return outlook_pool.stats()
 
 
 @app.get("/api/tasks")
