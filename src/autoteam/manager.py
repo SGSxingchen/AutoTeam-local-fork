@@ -1187,7 +1187,7 @@ def _complete_direct_about_you(page):
     return False
 
 
-def _register_direct_once(mail_client, email, password, cloudmail_account_id=None, use_runtime_proxy=False):
+def _register_direct_once(mail_client, email, password, cloudmail_account_id=None, use_free_proxy=False):
     """执行一次直接注册，返回是否完成注册并进入 Team。"""
     from playwright.sync_api import sync_playwright
 
@@ -1195,7 +1195,7 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
     signup_url = "https://chatgpt.com/auth/login"
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(**chromium_launch_kwargs(use_runtime_proxy=use_runtime_proxy))
+        browser = p.chromium.launch(**chromium_launch_kwargs(use_free_proxy=use_free_proxy))
         context = browser.new_context(**browser_context_kwargs())
         page = context.new_page()
 
