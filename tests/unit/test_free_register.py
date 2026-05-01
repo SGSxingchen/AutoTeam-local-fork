@@ -57,11 +57,11 @@ def test_create_free_account_uses_runtime_proxy_for_free_browser_flows(tmp_path,
     calls = {}
 
     def fake_register(*args, **kwargs):
-        calls["register_runtime_proxy"] = kwargs.get("use_runtime_proxy")
+        calls["register_free_proxy"] = kwargs.get("use_free_proxy")
         return True
 
     def fake_login(*args, **kwargs):
-        calls["codex_runtime_proxy"] = kwargs.get("use_runtime_proxy")
+        calls["codex_free_proxy"] = kwargs.get("use_free_proxy")
         return {
             "access_token": "at",
             "refresh_token": "rt",
@@ -79,7 +79,7 @@ def test_create_free_account_uses_runtime_proxy_for_free_browser_flows(tmp_path,
     result = free_register.create_one_free_account(mail_client)
 
     assert result["status"] == "ok"
-    assert calls == {"register_runtime_proxy": True, "codex_runtime_proxy": True}
+    assert calls == {"register_free_proxy": True, "codex_free_proxy": True}
 
 
 def test_create_free_account_register_failure_rolls_back(tmp_path, monkeypatch):

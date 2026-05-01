@@ -250,7 +250,7 @@ def _wait_for_otp_submit_result(page, timeout=12):
     return "pending", None
 
 
-def login_codex_via_browser(email, password, mail_client=None, use_runtime_proxy=False):
+def login_codex_via_browser(email, password, mail_client=None, use_free_proxy=False):
     """
     通过 Playwright 自动完成 Codex OAuth 登录。
     mail_client: CloudMailClient 实例，用于自动读取登录验证码。
@@ -269,7 +269,7 @@ def login_codex_via_browser(email, password, mail_client=None, use_runtime_proxy
     auth_code = None
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(**chromium_launch_kwargs(use_runtime_proxy=use_runtime_proxy))
+        browser = p.chromium.launch(**chromium_launch_kwargs(use_free_proxy=use_free_proxy))
         context = browser.new_context(**browser_context_kwargs())
 
         # === Step 0: 先登录 ChatGPT 并切换到 Team workspace ===
