@@ -37,6 +37,7 @@ CLOUDMAIL_PASSWORD = os.environ.get("CLOUDMAIL_PASSWORD", "")
 CLOUDMAIL_DOMAIN = os.environ.get("CLOUDMAIL_DOMAIN", "")
 # Free 注册专用域名（必须与 CLOUDMAIL_DOMAIN 不同；空字符串 = Free 功能不可用）
 CLOUDMAIL_FREE_DOMAIN = os.environ.get("CLOUDMAIL_FREE_DOMAIN", "")
+MAIL_PROVIDER = os.environ.get("MAIL_PROVIDER", "cloudmail").strip().lower()
 
 # ChatGPT Team 配置
 CHATGPT_ACCOUNT_ID = os.environ.get("CHATGPT_ACCOUNT_ID", "")
@@ -92,6 +93,12 @@ def get_free_playwright_proxy_url() -> str:
 
 def get_free_playwright_proxy_bypass() -> str:
     return FREE_PLAYWRIGHT_PROXY_BYPASS.strip()
+
+
+def get_mail_provider() -> str:
+    if MAIL_PROVIDER not in {"cloudmail", "outlook"}:
+        return "cloudmail"
+    return MAIL_PROVIDER
 
 
 def _format_proxy_host(hostname: str) -> str:

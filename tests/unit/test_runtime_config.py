@@ -79,6 +79,20 @@ def test_runtime_config_write_is_atomic_and_preserves_existing_keys(tmp_path, mo
     assert json.loads(runtime_file.read_text(encoding="utf-8")) == saved
 
 
+def test_mail_provider_reads_env_default_with_legacy_runtime_override(tmp_path, monkeypatch):
+    from autoteam import runtime_config
+
+    runtime_file = tmp_path / "runtime_config.json"
+    monkeypatch.setattr(runtime_config, "RUNTIME_CONFIG_FILE", runtime_file)
+    monkeypatch.setattr(config, "MAIL_PROVIDER", "outlook", raising=False)
+
+    assert runtime_config.get_mail_provider() == "outlook"
+
+    runtime_file.write_text(json.dumps({"MAIL_PROVIDER": "cloudmail"}), encoding="utf-8")
+
+    assert runtime_config.get_mail_provider() == "cloudmail"
+
+
 def test_free_playwright_launch_options_logs_masked_proxy(monkeypatch, caplog):
     monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_URL", "")
     monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_SERVER", "")

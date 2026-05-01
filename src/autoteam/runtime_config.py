@@ -16,6 +16,7 @@ RUNTIME_CONFIG_KEYS = (
     "CLOUDMAIL_FREE_DOMAIN",
     "PLAYWRIGHT_PROXY_URL",
     "PLAYWRIGHT_PROXY_BYPASS",
+    "MAIL_PROVIDER",
 )
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,10 @@ def _normalize_runtime_value(key: str, value) -> str:
     text = str(value or "").strip()
     if key == "CLOUDMAIL_FREE_DOMAIN" and text and not text.startswith("@"):
         text = f"@{text}"
+    if key == "MAIL_PROVIDER":
+        text = text.lower()
+        if text not in ("cloudmail", "outlook", ""):
+            text = "cloudmail"
     return text
 
 
@@ -110,3 +115,11 @@ def sanitize_runtime_config(config: dict[str, str]) -> dict[str, str]:
     if "PLAYWRIGHT_PROXY_URL" in sanitized:
         sanitized["PLAYWRIGHT_PROXY_URL"] = mask_proxy_url(sanitized["PLAYWRIGHT_PROXY_URL"])
     return sanitized
+
+
+def get_mail_provider() -> str:
+    """返回 'cloudmail' 或 'outlook'，兼容旧 runtime_config 覆盖。"""
+    from autoteam.config import get_mail_provider as _get_env_mail_provider
+
+    value = get_runtime_value("MAIL_PROVIDER", default=_get_env_mail_provider())
+    return value or "cloudmail"

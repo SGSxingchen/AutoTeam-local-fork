@@ -205,6 +205,8 @@
 
             <FreePage v-else-if="currentPage === 'free'" />
 
+            <MailPoolPage v-else-if="currentPage === 'mail-pool'" />
+
             <SyncPage
               v-else-if="currentPage === 'sync'"
               :running-task="busyTask"
@@ -231,6 +233,7 @@
               :codex-status="codexStatus"
               @refresh="refresh"
               @admin-progress="onAdminProgress"
+              @navigate="navigate"
             />
           </main>
         </Transition>
@@ -248,6 +251,7 @@ import Dashboard from './components/Dashboard.vue'
 import TeamMembers from './components/TeamMembers.vue'
 import PoolPage from './components/PoolPage.vue'
 import FreePage from './components/FreePage.vue'
+import MailPoolPage from './components/MailPoolPage.vue'
 import SyncPage from './components/SyncPage.vue'
 import TaskHistoryPage from './components/TaskHistoryPage.vue'
 import LogViewer from './components/LogViewer.vue'

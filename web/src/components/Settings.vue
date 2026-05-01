@@ -398,8 +398,34 @@
                 </div>
               </div>
 
+              <div v-if="field.key === 'MAIL_PROVIDER'" class="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2">
+                <div class="flex flex-wrap items-center gap-4">
+                  <label class="flex items-center gap-2 text-sm text-gray-200">
+                    <input type="radio" value="cloudmail" v-model="envForm[field.key]" />
+                    <span>CloudMail</span>
+                  </label>
+                  <label class="flex items-center gap-2 text-sm text-gray-200">
+                    <input type="radio" value="outlook" v-model="envForm[field.key]" />
+                    <span>Outlook</span>
+                    <a
+                      class="text-xs text-cyan-300 underline"
+                      href="#"
+                      @click.prevent="emit('navigate', 'mail-pool')"
+                    >
+                      池可用 {{ outlookStats.available }} 个
+                    </a>
+                  </label>
+                </div>
+                <p
+                  v-if="(envForm[field.key] || 'cloudmail') === 'outlook' && outlookStats.available === 0"
+                  class="mt-2 text-sm text-rose-300"
+                >
+                  Outlook 池为空，请先在「邮箱池」页导入。
+                </p>
+              </div>
+
               <div
-                v-if="field.type === 'bool'"
+                v-else-if="field.type === 'bool'"
                 class="flex h-10 items-center gap-3 rounded-lg border border-gray-700 bg-gray-800 px-3"
               >
                 <input
@@ -484,7 +510,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['refresh', 'admin-progress'])
+const emit = defineEmits(['refresh', 'admin-progress', 'navigate'])
 
 const envFields = ref([])
 const envForm = ref({})
@@ -497,6 +523,7 @@ const envMessageClass = ref('')
 const envSensitiveClears = ref({})
 const restartRequired = ref(false)
 const restartSubmitting = ref(false)
+const outlookStats = ref({ total: 0, available: 0, in_use: 0, used: 0, error: 0 })
 
 const email = ref('')
 const sessionEmail = ref('')
@@ -606,10 +633,19 @@ function applyEnvConfig(data) {
   envSensitiveClears.value = {}
 }
 
+async function loadOutlookStats() {
+  try {
+    outlookStats.value = await api.outlookPoolStats()
+  } catch (e) {
+    // 后端未启用或暂时不可用,保持默认 0
+  }
+}
+
 async function loadEnvConfig(options = {}) {
   try {
     const data = await api.getEnvConfig()
     applyEnvConfig(data)
+    await loadOutlookStats()
     if (options.clearRestart) {
       restartRequired.value = false
     }

@@ -35,6 +35,14 @@ ENV_FIELDS = (
     EnvField("CLOUDMAIL_PASSWORD", "CloudMail 登录密码", "CloudMail", optional=False, sensitive=True),
     EnvField("CLOUDMAIL_DOMAIN", "Team 邮箱域名", "CloudMail", optional=False),
     EnvField("CLOUDMAIL_FREE_DOMAIN", "Free 邮箱域名", "CloudMail"),
+    EnvField(
+        "MAIL_PROVIDER",
+        "Free 注册邮箱提供商",
+        "Free",
+        default="cloudmail",
+        restart_required=False,
+        description="cloudmail 或 outlook",
+    ),
     EnvField("CPA_URL", "CPA 地址", "CPA", default="http://127.0.0.1:8317", optional=False),
     EnvField("CPA_KEY", "CPA 管理密钥", "CPA", optional=False, sensitive=True),
     EnvField("API_KEY", "Web API Key", "安全", optional=False, sensitive=True, restart_required=False),
@@ -76,6 +84,7 @@ RUNTIME_ENV_MIGRATION = {
     "CLOUDMAIL_FREE_DOMAIN": "CLOUDMAIL_FREE_DOMAIN",
     "PLAYWRIGHT_PROXY_URL": "FREE_PLAYWRIGHT_PROXY_URL",
     "PLAYWRIGHT_PROXY_BYPASS": "FREE_PLAYWRIGHT_PROXY_BYPASS",
+    "MAIL_PROVIDER": "MAIL_PROVIDER",
 }
 
 
@@ -99,6 +108,10 @@ def _normalize_env_value(field: EnvField, value) -> str:
         return str(int(text))
     if field.key in {"CLOUDMAIL_DOMAIN", "CLOUDMAIL_FREE_DOMAIN"} and text and not text.startswith("@"):
         return f"@{text}"
+    if field.key == "MAIL_PROVIDER":
+        text = text.lower()
+        if text not in {"cloudmail", "outlook", ""}:
+            raise ValueError("MAIL_PROVIDER must be cloudmail or outlook")
     return text
 
 

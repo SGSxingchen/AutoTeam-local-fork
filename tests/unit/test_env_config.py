@@ -91,6 +91,24 @@ def test_save_env_config_marks_api_and_restart_service_without_restart(tmp_path,
     assert result["restart_required"] is False
 
 
+def test_mail_provider_is_editable_without_restart(tmp_path, monkeypatch):
+    env_file, _runtime_file = _patch_env_files(tmp_path, monkeypatch)
+    env_file.write_text("", encoding="utf-8")
+
+    config = env_config.get_env_config()
+    fields = {field["key"]: field for field in config["fields"]}
+
+    assert fields["MAIL_PROVIDER"]["value"] == "cloudmail"
+    assert fields["MAIL_PROVIDER"]["group"] == "Free"
+    assert fields["MAIL_PROVIDER"]["restart_required"] is False
+
+    result = env_config.save_env_values({"MAIL_PROVIDER": "Outlook"})
+
+    assert "MAIL_PROVIDER=outlook" in env_file.read_text(encoding="utf-8")
+    assert result["updated_keys"] == ["MAIL_PROVIDER"]
+    assert result["restart_required"] is False
+
+
 def test_save_env_config_rejects_unknown_keys(tmp_path, monkeypatch):
     _patch_env_files(tmp_path, monkeypatch)
 
@@ -114,6 +132,7 @@ def test_migrate_runtime_config_moves_free_values_into_env_without_overwriting(t
                 "CLOUDMAIL_FREE_DOMAIN": "@runtime.example.com",
                 "PLAYWRIGHT_PROXY_URL": "http://runtime-proxy.example.com:8080",
                 "PLAYWRIGHT_PROXY_BYPASS": "localhost,127.0.0.1",
+                "MAIL_PROVIDER": "outlook",
             }
         ),
         encoding="utf-8",
@@ -125,7 +144,8 @@ def test_migrate_runtime_config_moves_free_values_into_env_without_overwriting(t
     assert "CLOUDMAIL_FREE_DOMAIN=@already.example.com" in content
     assert "FREE_PLAYWRIGHT_PROXY_URL=http://existing-proxy:8080" in content
     assert "FREE_PLAYWRIGHT_PROXY_BYPASS=localhost,127.0.0.1" in content
+    assert "MAIL_PROVIDER=outlook" in content
     assert result == {
-        "migrated_keys": ["FREE_PLAYWRIGHT_PROXY_BYPASS"],
+        "migrated_keys": ["FREE_PLAYWRIGHT_PROXY_BYPASS", "MAIL_PROVIDER"],
         "skipped_keys": ["CLOUDMAIL_FREE_DOMAIN", "FREE_PLAYWRIGHT_PROXY_URL"],
     }

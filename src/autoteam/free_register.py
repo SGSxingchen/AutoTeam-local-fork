@@ -28,7 +28,14 @@ def _register_direct_once(*args, **kwargs):
 
 
 def make_free_mail_client():
-    """创建带 Free 域名的 CloudMail 客户端；未配置时抛 RuntimeError。"""
+    """根据 runtime_config.MAIL_PROVIDER 选择邮箱客户端。"""
+    from autoteam.runtime_config import get_mail_provider
+
+    if get_mail_provider() == "outlook":
+        from autoteam.outlook_mail import OutlookMailClient
+
+        return OutlookMailClient()
+
     domain = get_cloudmail_free_domain()
     if not domain:
         raise RuntimeError("CLOUDMAIL_FREE_DOMAIN not configured")
@@ -86,6 +93,13 @@ def create_one_free_account(mail_client):
             auth_file=str(auth_path),
             plan_type="free",
         )
+
+        from autoteam.runtime_config import get_mail_provider
+
+        if get_mail_provider() == "outlook":
+            from autoteam.outlook_pool import mark_used as _outlook_mark_used
+
+            _outlook_mark_used(email, registered_chatgpt_email=email)
 
         try:
             upload_to_cpa(auth_path)

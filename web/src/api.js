@@ -102,4 +102,19 @@ export const api = {
   getTeamMembers: () => request('GET', '/team/members'),
   removeTeamMember: (payload) => request('POST', '/team/members/remove', payload),
   getLogs: (limit = 100, since = 0) => request('GET', `/logs?limit=${limit}&since=${since}`),
+
+  listOutlookPool: (params = {}) => {
+    const qs = new URLSearchParams()
+    if (params.status) qs.set('status', params.status)
+    if (params.q) qs.set('q', params.q)
+    if (params.page) qs.set('page', params.page)
+    if (params.size) qs.set('size', params.size)
+    const tail = qs.toString() ? `?${qs}` : ''
+    return request('GET', `/outlook/pool${tail}`)
+  },
+  importOutlookPool: (text) => request('POST', '/outlook/pool/import', { text }),
+  testOutlookAccount: (email) => request('POST', `/outlook/pool/test/${encodeURIComponent(email)}`),
+  resetOutlookAccount: (email) => request('POST', `/outlook/pool/reset/${encodeURIComponent(email)}`),
+  deleteOutlookAccount: (email) => request('DELETE', `/outlook/pool/${encodeURIComponent(email)}`),
+  outlookPoolStats: () => request('GET', '/outlook/pool/stats'),
 }
