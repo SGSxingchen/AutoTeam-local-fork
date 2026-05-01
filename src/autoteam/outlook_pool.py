@@ -45,7 +45,12 @@ def load_pool() -> list[dict]:
     text = POOL_FILE.read_text(encoding="utf-8").strip()
     if not text:
         return []
-    return json.loads(text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        logger.exception("outlook_pool.json corrupt; treating as empty")
+        return []
+    return data if isinstance(data, list) else []
 
 
 def save_pool(rows: list[dict]) -> None:
@@ -73,7 +78,7 @@ def stats() -> dict:
     return out
 
 
-def _parse_line(line: str, line_no: int) -> tuple[dict | None, str | None]:
+def _parse_line(line: str) -> tuple[dict | None, str | None]:
     """解析单行,返回 (record, error)。两者必有其一。"""
     parts = line.split("----")
     if len(parts) == 4:
@@ -124,7 +129,7 @@ def import_from_text(text: str) -> dict:
             line = raw.strip()
             if not line:
                 continue
-            record, err = _parse_line(line, idx)
+            record, err = _parse_line(line)
             if err:
                 errors.append({"line": idx, "reason": err})
                 continue
@@ -152,14 +157,10 @@ def claim_one() -> dict | None:
         if not candidates:
             return None
         target = candidates[0]
-        target_email = target["email"]
-        for r in rows:
-            if _normalize_email(r.get("email")) == target_email:
-                r["status"] = "in_use"
-                r["claimed_at"] = int(time.time())
-                save_pool(rows)
-                return dict(r)
-    return None
+        target["status"] = "in_use"
+        target["claimed_at"] = int(time.time())
+        save_pool(rows)
+        return dict(target)
 
 
 def _update(email: str, **fields) -> bool:
@@ -243,17 +244,17 @@ if __name__ == "__main__":
 bad----too----few
 abc@example.com----pwd----not-a-uuid----also-too-short
 """
-    rec, err = _parse_line(sample.splitlines()[0], 1)
+    rec, err = _parse_line(sample.splitlines()[0])
     assert rec is not None and err is None, (rec, err)
     assert rec["email"] == "qpzst27553129@hotmail.com"
     assert rec["client_id"] == "9e5f94bc-e8a4-4e73-b8be-63364c29d753"
     print("[smoke] 4-field parse OK")
 
-    rec2, err2 = _parse_line(sample.splitlines()[1], 2)
+    rec2, err2 = _parse_line(sample.splitlines()[1])
     assert rec2 is None and "段数" in err2
     print("[smoke] short line rejected:", err2)
 
-    rec3, err3 = _parse_line(sample.splitlines()[2], 3)
+    rec3, err3 = _parse_line(sample.splitlines()[2])
     assert rec3 is None and err3 is not None
     print("[smoke] bad uuid rejected:", err3)
 
