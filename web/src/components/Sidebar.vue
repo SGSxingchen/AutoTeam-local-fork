@@ -177,6 +177,13 @@ const items = [
     iconPath: 'M12 4v16M4 12h16',
   },
   {
+    key: 'mail-pool',
+    label: '邮箱池',
+    mobileLabel: '邮箱',
+    copy: 'Outlook 邮箱批量导入与管理',
+    iconPath: 'M4 6h16v12H4zM4 6l8 7 8-7',
+  },
+  {
     key: 'sync',
     label: '同步中心',
     mobileLabel: '同步',
