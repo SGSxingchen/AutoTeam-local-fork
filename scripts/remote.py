@@ -39,13 +39,27 @@ def run(cmd: str) -> int:
     client = _connect()
     try:
         _, stdout, stderr = client.exec_command(cmd, get_pty=False, timeout=None)
-        # stream output line by line
+        # stream output line by line; reconfigure stdout to utf-8 if possible so
+        # non-ascii shell output from Linux doesn't trip Windows' default cp/gbk.
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+        out_buf = sys.stdout.buffer if hasattr(sys.stdout, "buffer") else None
         for chunk in iter(lambda: stdout.channel.recv(4096), b""):
-            sys.stdout.write(chunk.decode(errors="replace"))
-            sys.stdout.flush()
-        err = stderr.read().decode(errors="replace")
+            if out_buf is not None:
+                out_buf.write(chunk)
+                out_buf.flush()
+            else:
+                sys.stdout.write(chunk.decode("utf-8", errors="replace"))
+                sys.stdout.flush()
+        err = stderr.read()
         if err:
-            sys.stderr.write(err)
+            try:
+                sys.stderr.buffer.write(err)
+            except Exception:
+                sys.stderr.write(err.decode("utf-8", errors="replace"))
         return stdout.channel.recv_exit_status()
     finally:
         client.close()

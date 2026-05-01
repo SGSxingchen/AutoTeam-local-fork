@@ -17,8 +17,8 @@ from autoteam.admin_state import (
     get_chatgpt_workspace_name,
     update_admin_state,
 )
-from autoteam.config import get_playwright_launch_options  # noqa: F401
-from autoteam.playwright_config import browser_context_kwargs, chromium_launch_kwargs
+from autoteam.config import get_playwright_launch_options
+from autoteam.playwright_config import browser_context_kwargs
 from autoteam.textio import read_text
 
 logger = logging.getLogger(__name__)
@@ -170,7 +170,7 @@ class ChatGPTTeamAPI:
 
         try:
             self.playwright = sync_playwright().start()
-            self.browser = self.playwright.chromium.launch(**chromium_launch_kwargs())
+            self.browser = self.playwright.chromium.launch(**get_playwright_launch_options())
             self.context = self.browser.new_context(**browser_context_kwargs())
             self.page = self.context.new_page()
         except Exception:

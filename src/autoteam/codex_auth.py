@@ -22,6 +22,7 @@ from autoteam.admin_state import (
     update_admin_state,
 )
 from autoteam.auth_storage import AUTH_DIR, ensure_auth_dir, ensure_auth_file_permissions
+from autoteam.fivesim import FiveSimClient, is_phone_page, try_phone_verification
 from autoteam.playwright_config import browser_context_kwargs, chromium_launch_kwargs
 from autoteam.textio import write_text
 
@@ -837,6 +838,20 @@ def login_codex_via_browser(email, password, mail_client=None):
             except Exception:
                 pass
 
+            # 处理手机号验证页面（login_codex_via_browser 路径）
+            try:
+                if is_phone_page(page):
+                    fivesim = FiveSimClient()
+                    if fivesim.is_configured:
+                        logger.info("[Codex] 检测到手机验证页面 (step %d)，尝试自动接码...", step + 1)
+                        if try_phone_verification(page, fivesim):
+                            time.sleep(3)
+                            continue
+                    else:
+                        logger.warning("[Codex] 检测到手机验证但未配置 5sim API key")
+            except Exception:
+                pass
+
             try:
                 consent_btn = page.locator(
                     'button:has-text("继续"), button:has-text("Continue"), button:has-text("Allow")'
@@ -885,6 +900,10 @@ def login_codex_via_browser(email, password, mail_client=None):
 def login_codex_via_session():
     """使用主号 session 直接完成 Codex OAuth 登录。"""
     logger.info("[Codex] 开始使用 session 登录主号 Codex...")
+
+    def _no_save(_bundle):
+        return ""
+
     flow = SessionCodexAuthFlow(
         email=get_admin_email(),
         session_token=get_admin_session_token(),
@@ -892,16 +911,19 @@ def login_codex_via_session():
         workspace_name=get_chatgpt_workspace_name(),
         password=get_admin_password(),
         password_callback=lambda password: update_admin_state(password=password),
-        auth_file_callback=lambda _bundle: "",
+        auth_file_callback=_no_save,
     )
-
     try:
-        step = flow.start()
-        if step.get("step") != "completed":
-            logger.warning("[Codex] 主号 session OAuth 未完成: %s", step)
+        result = flow.start()
+        if result.get("step") != "completed":
+            logger.warning("[Codex] 主号 Codex OAuth 需要更多步骤: %s", result.get("step"))
             return None
         info = flow.complete()
-        return info.get("bundle")
+        return info.get("bundle") or {
+            "email": info.get("email"),
+            "plan_type": info.get("plan_type"),
+            "auth_file": info.get("auth_file"),
+        }
     finally:
         flow.stop()
 
@@ -967,6 +989,7 @@ class SessionCodexAuthFlow:
         password="",
         password_callback=None,
         auth_file_callback=None,
+        fivesim_client=None,
     ):
         self.email = email or ""
         self.password = password or ""
@@ -986,6 +1009,8 @@ class SessionCodexAuthFlow:
         self._own_mail_client = False
         self._email_id_before_login = 0
         self._used_email_ids = set()
+        self._fivesim_client = fivesim_client
+        self._own_fivesim = False
 
     def _visible_locator(self, selectors, timeout_ms=5000):
         if not self.page:
@@ -1040,6 +1065,8 @@ class SessionCodexAuthFlow:
         if self._capture_auth_code_from_url(cur, source="当前URL"):
             return "completed", None
 
+        if is_phone_page(self.page):
+            return "phone_required", None
         if self._visible_locator(self.CODE_SELECTORS, timeout_ms=800):
             return "code_required", None
         if self._visible_locator(self.PASSWORD_SELECTORS, timeout_ms=800):
@@ -1280,6 +1307,22 @@ class SessionCodexAuthFlow:
             logger.warning("[Codex] 初始化 CloudMail 失败，无法自动读取验证码: %s", exc)
             return None
 
+    def _ensure_fivesim_client(self):
+        if self._fivesim_client:
+            return self._fivesim_client
+
+        try:
+            self._fivesim_client = FiveSimClient()
+            if self._fivesim_client.is_configured:
+                self._own_fivesim = True
+                logger.info("[Codex] 已连接 5sim，用于自动手机接码")
+            else:
+                self._fivesim_client = None
+        except Exception as exc:
+            logger.warning("[Codex] 初始化 5sim 失败，无法自动手机接码: %s", exc)
+            self._fivesim_client = None
+        return self._fivesim_client
+
     def _snapshot_latest_email_id(self):
         if not self.email:
             return 0
@@ -1415,6 +1458,17 @@ class SessionCodexAuthFlow:
 
         return False
 
+    def _auto_fill_phone_code(self):
+        if not self.page:
+            return False
+
+        fivesim = self._ensure_fivesim_client()
+        if not fivesim:
+            logger.warning("[Codex] 需要手机验证但未配置 5sim API key")
+            return False
+
+        return try_phone_verification(self.page, fivesim)
+
     def _advance(self, attempts=12):
         for _ in range(attempts):
             step, detail = self._detect_step()
@@ -1424,6 +1478,10 @@ class SessionCodexAuthFlow:
                 if self._auto_fill_email_code():
                     continue
                 return {"step": "code_required", "detail": detail}
+            if step == "phone_required":
+                if self._auto_fill_phone_code():
+                    continue
+                return {"step": "phone_required", "detail": detail}
             if step == "password_required" and not self.password:
                 if self._switch_to_one_time_code():
                     continue
@@ -1523,7 +1581,15 @@ class SessionCodexAuthFlow:
         self.mail_client = None
 
 
-class MainCodexSyncFlow(SessionCodexAuthFlow):
+def _main_codex_info(info):
+    return {
+        "email": info.get("email"),
+        "auth_file": info.get("auth_file"),
+        "plan_type": info.get("plan_type"),
+    }
+
+
+class MainCodexLoginFlow(SessionCodexAuthFlow):
     def __init__(self):
         super().__init__(
             email=get_admin_email(),
@@ -1536,16 +1602,17 @@ class MainCodexSyncFlow(SessionCodexAuthFlow):
         )
 
     def complete(self):
-        info = super().complete()
+        return _main_codex_info(super().complete())
+
+
+class MainCodexSyncFlow(MainCodexLoginFlow):
+    def complete(self):
+        info = SessionCodexAuthFlow.complete(self)
 
         from autoteam.cpa_sync import sync_main_codex_to_cpa
 
         sync_main_codex_to_cpa(info["auth_file"])
-        return {
-            "email": info.get("email"),
-            "auth_file": info.get("auth_file"),
-            "plan_type": info.get("plan_type"),
-        }
+        return _main_codex_info(info)
 
 
 def login_main_codex():

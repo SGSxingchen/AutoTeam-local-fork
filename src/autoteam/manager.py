@@ -57,6 +57,7 @@ from autoteam.codex_auth import (
 )
 from autoteam.config import CLOUDMAIL_FREE_DOMAIN
 from autoteam.cpa_sync import sync_from_cpa, sync_main_codex_to_cpa, sync_to_cpa
+from autoteam.fivesim import FiveSimClient, is_phone_page, try_phone_verification
 from autoteam.playwright_config import browser_context_kwargs, chromium_launch_kwargs
 from autoteam.textio import read_text, write_text
 
@@ -1052,6 +1053,8 @@ def _detect_direct_register_step(page):
         return "email"
     if "create-account" in url or "password" in url:
         return "password"
+    if is_phone_page(page):
+        return "phone"
     return "unknown"
 
 
@@ -1431,6 +1434,22 @@ def _register_direct_once(mail_client, email, password, cloudmail_account_id=Non
 
         _safe_invite_screenshot(page, "direct_06_after_profile.png")
         logger.info("[直接注册] 当前 URL: %s", page.url)
+
+        # 手机号验证
+        try:
+            if is_phone_page(page):
+                fivesim = FiveSimClient()
+                if fivesim.is_configured:
+                    logger.info("[直接注册] 检测到手机验证页面，尝试自动接码...")
+                    if try_phone_verification(page, fivesim):
+                        time.sleep(3)
+                        _safe_invite_screenshot(page, "direct_06b_after_phone.png")
+                    else:
+                        logger.warning("[直接注册] 手机验证失败，继续流程...")
+                else:
+                    logger.warning("[直接注册] 检测到手机验证但未配置 5sim API key")
+        except Exception as exc:
+            logger.warning("[直接注册] 手机验证异常: %s | URL: %s", exc, page.url)
 
         try:
             join_btn = page.locator('button:has-text("Accept"), button:has-text("Join"), button:has-text("加入")').first

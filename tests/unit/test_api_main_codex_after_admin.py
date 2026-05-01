@@ -142,6 +142,31 @@ def test_post_main_codex_login_starts_login_flow(monkeypatch):
     assert result["message"] == "主号 Codex 已登录"
 
 
+def test_start_main_codex_flow_keeps_phone_required_pending(monkeypatch):
+    class FakeMainCodexFlow:
+        stopped = False
+
+        def start(self):
+            return {"step": "phone_required", "detail": None}
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr("autoteam.codex_auth.MainCodexSyncFlow", FakeMainCodexFlow)
+    monkeypatch.setattr("autoteam.codex_auth.MainCodexLoginFlow", FakeMainCodexFlow, raising=False)
+    monkeypatch.setattr(api._pw_executor, "run", lambda func, *args, **kwargs: func(*args, **kwargs))
+    monkeypatch.setattr(api, "_main_codex_flow", None)
+    monkeypatch.setattr(api, "_main_codex_step", None)
+    monkeypatch.setattr(api, "_main_codex_action", None)
+
+    step, result = api._start_main_codex_flow(action="sync")
+
+    assert step == "phone_required"
+    assert result["status"] == "phone_required"
+    assert api._main_codex_step == "phone_required"
+    assert api._main_codex_flow.stopped is False
+
+
 def test_post_main_codex_delete_cpa_returns_deleted_names(monkeypatch):
     monkeypatch.setattr(
         "autoteam.cpa_sync.delete_main_codex_from_cpa",

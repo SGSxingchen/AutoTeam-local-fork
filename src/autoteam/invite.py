@@ -26,6 +26,7 @@ from playwright.sync_api import sync_playwright
 
 from autoteam.chatgpt_api import ChatGPTTeamAPI
 from autoteam.cloudmail import CloudMailClient
+from autoteam.fivesim import FiveSimClient, is_phone_page, try_phone_verification
 from autoteam.playwright_config import browser_context_kwargs, chromium_launch_kwargs
 
 logger = logging.getLogger(__name__)
@@ -322,6 +323,22 @@ def register_with_invite(page, invite_link, email, mail_client, password=None):
         )
         time.sleep(8)
         screenshot(page, "reg_07_after_profile.png")
+
+    # 手机号验证（可能在注册流程中出现）
+    try:
+        if is_phone_page(page):
+            fivesim = FiveSimClient()
+            if fivesim.is_configured:
+                logger.info("[注册] 检测到手机号验证页面，尝试自动接码...")
+                if try_phone_verification(page, fivesim):
+                    time.sleep(3)
+                    screenshot(page, "reg_07b_after_phone.png")
+                else:
+                    logger.warning("[注册] 手机验证失败，继续流程...")
+            else:
+                logger.warning("[注册] 检测到手机验证但未配置 5sim API key")
+    except Exception as e:
+        logger.error("[注册] 手机验证异常: %s", e)
 
     # 可能需要接受条款 / 加入 workspace
     find_and_click(

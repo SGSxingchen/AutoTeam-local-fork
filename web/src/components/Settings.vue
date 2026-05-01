@@ -315,6 +315,13 @@
           </button>
         </div>
 
+        <div
+          v-else-if="props.codexStatus?.step === 'phone_required'"
+          class="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100"
+        >
+          主号 Codex 当前需要手机验证。请配置 5sim 后重新发起，或取消当前登录流程。
+        </div>
+
         <div v-if="syncingMain && codexSubmittingHint" class="text-xs text-cyan-300">
           {{ codexSubmittingHint }}
         </div>

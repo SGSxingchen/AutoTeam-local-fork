@@ -675,6 +675,7 @@ def _start_main_codex_flow(action="sync"):
     from autoteam.codex_auth import MainCodexLoginFlow, MainCodexSyncFlow
 
     flow_cls = MainCodexSyncFlow if action == "sync" else MainCodexLoginFlow
+    pending_steps = ("password_required", "code_required", "phone_required")
 
     def _do_start():
         return _run_playwright_start(flow_cls, lambda flow: flow.start())
@@ -684,7 +685,7 @@ def _start_main_codex_flow(action="sync"):
     if step == "completed":
         _set_pending_main_codex_flow(flow, step, action)
         return step, _finish_main_codex_flow()
-    if step in ("password_required", "code_required"):
+    if step in pending_steps:
         return step, _set_pending_main_codex_flow(flow, step, action)
 
     _pw_executor.run(flow.stop)
@@ -1019,7 +1020,7 @@ def post_main_codex_password(params: AdminPasswordParams):
         step = result["step"]
         if step == "completed":
             return _finish_main_codex_flow()
-        if step in ("password_required", "code_required"):
+        if step in ("password_required", "code_required", "phone_required"):
             _main_codex_step = step
             return {"status": step, "codex": _main_codex_status()}
         raise HTTPException(status_code=400, detail=result.get("detail") or "主号 Codex 密码登录失败")
@@ -1050,7 +1051,7 @@ def post_main_codex_code(params: AdminCodeParams):
         step = result["step"]
         if step == "completed":
             return _finish_main_codex_flow()
-        if step in ("password_required", "code_required"):
+        if step in ("password_required", "code_required", "phone_required"):
             _main_codex_step = step
             return {"status": step, "codex": _main_codex_status()}
         raise HTTPException(status_code=400, detail=result.get("detail") or "主号 Codex 验证码登录失败")

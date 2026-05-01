@@ -56,6 +56,12 @@ AUTO_CHECK_THRESHOLD = _get_int_env("AUTO_CHECK_THRESHOLD", 10)  # 额度低于�
 AUTO_CHECK_MIN_LOW = _get_int_env("AUTO_CHECK_MIN_LOW", 2)  # 至少几个账号低于阈值才触发，默认 2
 PLAYWRIGHT_HEADLESS = _get_bool_env("PLAYWRIGHT_HEADLESS", False)
 
+# 5sim 接码平台配置
+FIVESIM_API_KEY = os.environ.get("FIVESIM_API_KEY", "")
+FIVESIM_PRODUCT = os.environ.get("FIVESIM_PRODUCT", "openai")
+FIVESIM_COUNTRY = os.environ.get("FIVESIM_COUNTRY", "any")
+FIVESIM_OPERATOR = os.environ.get("FIVESIM_OPERATOR", "any")
+
 # Playwright 代理配置
 PLAYWRIGHT_PROXY_URL = os.environ.get("PLAYWRIGHT_PROXY_URL", "").strip()
 PLAYWRIGHT_PROXY_SERVER = os.environ.get("PLAYWRIGHT_PROXY_SERVER", "").strip()
