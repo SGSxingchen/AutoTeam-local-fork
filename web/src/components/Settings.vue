@@ -343,7 +343,7 @@
         <div>
           <h2 class="text-lg font-semibold text-white">运行时配置</h2>
           <p class="text-sm text-gray-400 mt-1">
-            Free 域名和浏览器代理保存到 runtime_config.json，新建任务会直接使用最新值。
+            Free 域名和 Free 浏览器代理保存到 runtime_config.json；Team 轮转和管理员流程不使用这里的代理。
           </p>
         </div>
         <span v-if="runtimeSaved" class="text-xs text-green-400 transition">已保存</span>
@@ -368,7 +368,7 @@
         </div>
         <div>
           <div class="mb-1 flex items-center justify-between gap-2">
-            <label class="block text-sm text-gray-400">代理 URL</label>
+            <label class="block text-sm text-gray-400">Free 代理 URL</label>
             <span class="text-[11px] text-gray-500">{{ runtimeSources.PLAYWRIGHT_PROXY_URL || 'env' }}</span>
           </div>
           <input
@@ -380,7 +380,7 @@
         </div>
         <div>
           <div class="mb-1 flex items-center justify-between gap-2">
-            <label class="block text-sm text-gray-400">代理绕过</label>
+            <label class="block text-sm text-gray-400">Free 代理绕过</label>
             <span class="text-[11px] text-gray-500">{{ runtimeSources.PLAYWRIGHT_PROXY_BYPASS || 'env' }}</span>
           </div>
           <input

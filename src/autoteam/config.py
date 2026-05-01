@@ -117,18 +117,23 @@ def _parse_proxy_url(proxy_url: str):
     return proxy
 
 
-def get_playwright_launch_options():
+def get_playwright_launch_options(*, use_runtime_proxy: bool = False):
     """统一的 Playwright Chromium 启动参数。"""
     options = {
         "headless": PLAYWRIGHT_HEADLESS,
         "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox"],
     }
 
-    from autoteam.runtime_config import get_runtime_override
+    proxy_url_override = None
+    if use_runtime_proxy:
+        from autoteam.runtime_config import get_runtime_override
 
-    proxy_url_override = get_runtime_override("PLAYWRIGHT_PROXY_URL")
-    proxy_url = PLAYWRIGHT_PROXY_URL if proxy_url_override is None else proxy_url_override
-    proxy_bypass = get_playwright_proxy_bypass()
+        proxy_url_override = get_runtime_override("PLAYWRIGHT_PROXY_URL")
+        proxy_url = PLAYWRIGHT_PROXY_URL if proxy_url_override is None else proxy_url_override
+        proxy_bypass = get_playwright_proxy_bypass()
+    else:
+        proxy_url = PLAYWRIGHT_PROXY_URL
+        proxy_bypass = PLAYWRIGHT_PROXY_BYPASS
 
     proxy = None
     if proxy_url:

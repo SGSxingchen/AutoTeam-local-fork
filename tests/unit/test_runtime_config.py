@@ -16,7 +16,25 @@ def test_runtime_config_overrides_env_domain_and_normalizes_at(tmp_path, monkeyp
     assert config.get_cloudmail_free_domain() == "@free.example.com"
 
 
-def test_runtime_config_can_clear_env_proxy(tmp_path, monkeypatch):
+def test_runtime_proxy_does_not_affect_default_team_playwright_options(tmp_path, monkeypatch):
+    from autoteam import runtime_config
+
+    runtime_file = tmp_path / "runtime_config.json"
+    runtime_file.write_text(
+        json.dumps({"PLAYWRIGHT_PROXY_URL": "http://runtime-proxy.example.com:8080"}), encoding="utf-8"
+    )
+
+    monkeypatch.setattr(runtime_config, "RUNTIME_CONFIG_FILE", runtime_file)
+    monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_URL", "")
+    monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_SERVER", "")
+    monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_BYPASS", "")
+
+    options = config.get_playwright_launch_options()
+
+    assert "proxy" not in options
+
+
+def test_runtime_config_can_clear_env_proxy_for_free_playwright(tmp_path, monkeypatch):
     from autoteam import runtime_config
 
     runtime_file = tmp_path / "runtime_config.json"
@@ -26,12 +44,12 @@ def test_runtime_config_can_clear_env_proxy(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_URL", "http://env-proxy.example.com:8080")
     monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_BYPASS", "")
 
-    options = config.get_playwright_launch_options()
+    options = config.get_playwright_launch_options(use_runtime_proxy=True)
 
     assert "proxy" not in options
 
 
-def test_playwright_launch_options_reads_runtime_file_each_call(tmp_path, monkeypatch):
+def test_free_playwright_launch_options_reads_runtime_file_each_call(tmp_path, monkeypatch):
     from autoteam import runtime_config
 
     runtime_file = tmp_path / "runtime_config.json"
@@ -50,7 +68,7 @@ def test_playwright_launch_options_reads_runtime_file_each_call(tmp_path, monkey
     monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_SERVER", "")
     monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_BYPASS", "")
 
-    first = config.get_playwright_launch_options()
+    first = config.get_playwright_launch_options(use_runtime_proxy=True)
     assert first["proxy"] == {
         "server": "http://proxy-one.example.com:8080",
         "username": "user",
@@ -62,7 +80,7 @@ def test_playwright_launch_options_reads_runtime_file_each_call(tmp_path, monkey
         json.dumps({"PLAYWRIGHT_PROXY_URL": "socks5://proxy-two.example.com:1080"}), encoding="utf-8"
     )
 
-    second = config.get_playwright_launch_options()
+    second = config.get_playwright_launch_options(use_runtime_proxy=True)
     assert second["proxy"] == {"server": "socks5://proxy-two.example.com:1080"}
 
 
@@ -103,7 +121,7 @@ def test_playwright_launch_options_logs_masked_proxy(tmp_path, monkeypatch, capl
     monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_BYPASS", "")
 
     with caplog.at_level(logging.INFO, logger="autoteam.config"):
-        config.get_playwright_launch_options()
+        config.get_playwright_launch_options(use_runtime_proxy=True)
 
     assert (
         "[Playwright] 使用代理: server=http://proxy.example.com:8080 auth=enabled bypass=localhost,127.0.0.1"
@@ -125,6 +143,6 @@ def test_playwright_launch_options_logs_direct_connection(tmp_path, monkeypatch,
     monkeypatch.setattr(config, "PLAYWRIGHT_PROXY_BYPASS", "")
 
     with caplog.at_level(logging.INFO, logger="autoteam.config"):
-        config.get_playwright_launch_options()
+        config.get_playwright_launch_options(use_runtime_proxy=True)
 
     assert "[Playwright] 未使用代理" in caplog.text

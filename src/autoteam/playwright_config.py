@@ -12,8 +12,8 @@ DEFAULT_CONTEXT_KWARGS = {
 }
 
 
-def chromium_launch_kwargs() -> dict:
-    kwargs = get_playwright_launch_options()
+def chromium_launch_kwargs(*, use_runtime_proxy: bool = False) -> dict:
+    kwargs = get_playwright_launch_options(use_runtime_proxy=use_runtime_proxy)
     if sys.platform.startswith("win") and not PLAYWRIGHT_HEADLESS:
         kwargs["slow_mo"] = 100
     return kwargs

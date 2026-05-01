@@ -21,7 +21,7 @@ def test_create_free_account_success(tmp_path, monkeypatch):
     monkeypatch.setattr(
         free_register,
         "login_codex_via_browser",
-        lambda email, password, mail_client=None: {
+        lambda email, password, mail_client=None, **kwargs: {
             "access_token": "at",
             "refresh_token": "rt",
             "id_token": "it",
@@ -46,6 +46,40 @@ def test_create_free_account_success(tmp_path, monkeypatch):
     assert len(rows) == 1
     assert rows[0]["email"] == "abc@free.example.com"
     assert rows[0]["plan_type"] == "free"
+
+
+def test_create_free_account_uses_runtime_proxy_for_free_browser_flows(tmp_path, monkeypatch):
+    _patch_state(tmp_path, monkeypatch)
+
+    mail_client = MagicMock()
+    mail_client.create_temp_email.return_value = (777, "abc@free.example.com")
+
+    calls = {}
+
+    def fake_register(*args, **kwargs):
+        calls["register_runtime_proxy"] = kwargs.get("use_runtime_proxy")
+        return True
+
+    def fake_login(*args, **kwargs):
+        calls["codex_runtime_proxy"] = kwargs.get("use_runtime_proxy")
+        return {
+            "access_token": "at",
+            "refresh_token": "rt",
+            "id_token": "it",
+            "account_id": "aid",
+            "email": args[0],
+            "plan_type": "free",
+        }
+
+    monkeypatch.setattr(free_register, "_register_direct_once", fake_register)
+    monkeypatch.setattr(free_register, "login_codex_via_browser", fake_login)
+    monkeypatch.setattr(free_register, "save_auth_file", lambda bundle: tmp_path / "auth.json")
+    monkeypatch.setattr(free_register, "upload_to_cpa", lambda path: True)
+
+    result = free_register.create_one_free_account(mail_client)
+
+    assert result["status"] == "ok"
+    assert calls == {"register_runtime_proxy": True, "codex_runtime_proxy": True}
 
 
 def test_create_free_account_register_failure_rolls_back(tmp_path, monkeypatch):
@@ -154,7 +188,7 @@ def test_batch_creation_aggregates_results(tmp_path, monkeypatch):
     monkeypatch.setattr(
         free_register,
         "login_codex_via_browser",
-        lambda email, password, mail_client=None: {
+        lambda email, password, mail_client=None, **kwargs: {
             "access_token": "at",
             "refresh_token": "rt",
             "id_token": "it",
@@ -269,7 +303,7 @@ def test_refresh_codex_success_updates_record_and_uploads(tmp_path, monkeypatch)
     monkeypatch.setattr(
         free_register,
         "login_codex_via_browser",
-        lambda email, password, mail_client=None: {
+        lambda email, password, mail_client=None, **kwargs: {
             "access_token": "at",
             "refresh_token": "rt",
             "id_token": "it",
